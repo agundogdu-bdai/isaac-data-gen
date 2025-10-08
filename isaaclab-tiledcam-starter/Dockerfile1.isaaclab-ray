@@ -1,0 +1,29 @@
+# Isaac Lab 2.2.0 + Ray (lean)
+FROM nvcr.io/nvidia/isaac-lab:2.2.0
+
+ARG RAY_VER=2.31.0
+
+# Accept EULAs and allow headless + root in container
+ENV ACCEPT_EULA=Y \
+    OMNI_KIT_ACCEPT_EULA=YES \
+    OMNI_KIT_ALLOW_ROOT=1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics \
+    RAY_VERSION=${RAY_VER}
+
+# Create shims for python/pip/ray and install Ray
+RUN set -euxo pipefail && \
+    printf '#!/bin/bash\nexec /isaac-sim/python.sh "$@"\n' > /usr/local/bin/python && chmod +x /usr/local/bin/python && \
+    printf '#!/bin/bash\nexec /isaac-sim/python.sh -m pip "$@"\n' > /usr/local/bin/pip && chmod +x /usr/local/bin/pip && \
+    /usr/local/bin/pip install --no-cache-dir --upgrade pip && \
+    /usr/local/bin/pip install --no-cache-dir \
+        "ray[default]==${RAY_VER}" \
+        "ray[serve]==${RAY_VER}" && \
+    printf '#!/bin/bash\nexec /isaac-sim/python.sh -m ray.scripts.scripts "$@"\n' > /usr/local/bin/ray && chmod +x /usr/local/bin/ray
+
+# Verify Ray installation
+RUN /isaac-sim/python.sh -c "from importlib.metadata import version; print('Ray version:', version('ray')); assert version('ray') == '${RAY_VER}'"
+
+WORKDIR /workspace/isaaclab
+
+ENTRYPOINT ["/workspace/isaaclab/isaaclab.sh", "-p"]

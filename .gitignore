@@ -1,0 +1,59 @@
+# Dataset outputs
+vpl_tiled/
+datasets/
+frames_tiled/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model checkpoints
+*.pt
+*.pth
+model_trained.*
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Test/example scripts (not core functionality)
+run_camera_franka_drawer.py
+run_franka_simple_render.py
+run_franka_tutorial_style.py
+run_tiled_wide_spacing.py
+save_camera_benchmark_like.py
+
+# Additional dockerfiles (keep only the main one)
+isaaclab-tiledcam-starter/Dockerfile.isaaclab-ray
+isaaclab-tiledcam-starter/apps/
+isaaclab-tiledcam-starter/isaaclab/
+isaaclab-tiledcam-starter/output/
+isaaclab-tiledcam-starter/ov_logs/
+
