@@ -6,7 +6,14 @@ Train RL policies and collect VPL datasets with dual-camera support (overview + 
 
 ## Quick Start
 
-### 1. Build Docker Image
+### 1. Build or Pull Docker Image
+
+**Option A: Pull from Google Artifact Registry (recommended)**
+```bash
+docker pull us-docker.pkg.dev/engineering-380817/bdai/isaaclab-data-gen:latest
+```
+
+**Option B: Build locally**
 ```bash
 docker build -t isaaclab:2.2-ray \
   -f isaaclab-tiledcam-starter/Dockerfile1.isaaclab-ray .
@@ -97,7 +104,7 @@ vpl_tiled/
 
 - **FULL_GUIDE.md** - Complete command reference with minimal explanations
 - **WHAT_IT_DOES.md** - Detailed explanations of how everything works
-- **TOP_CAMERA_SETUP.md** - Third camera setup guide and configuration
+- **DOCKER_PUSH_GUIDE.md** - Guide for pushing Docker images to Google Artifact Registry
 
 ---
 
