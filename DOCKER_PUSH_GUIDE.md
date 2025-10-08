@@ -8,13 +8,9 @@ gcloud auth configure-docker us-docker.pkg.dev
 
 # 2. Tag your image
 docker tag isaaclab-tiledcam:latest \
-  us-docker.pkg.dev/engineering-380817/bdai/isaaclab-data-gen:2.2.0-triple-cam
-
-docker tag isaaclab-tiledcam:latest \
   us-docker.pkg.dev/engineering-380817/bdai/isaaclab-data-gen:latest
 
 # 3. Push
-docker push us-docker.pkg.dev/engineering-380817/bdai/isaaclab-data-gen:2.2.0-triple-cam
 docker push us-docker.pkg.dev/engineering-380817/bdai/isaaclab-data-gen:latest
 
 # 4. Verify
