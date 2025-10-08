@@ -21,17 +21,18 @@ echo "✓ Files copied"
 echo ""
 
 # Step 3: Run collection
-echo "[3/4] Running data collection (20 envs, 2 episodes, 60 steps)..."
+echo "[3/4] Running data collection (2 envs, 2 episodes, 60 steps)..."
+echo "Collecting with 3 cameras: overview, wrist, and top-view"
 echo "This should take ~2-3 minutes total"
 echo ""
 docker exec -it isaaclab-test bash -c "cd /workspace/isaaclab && \
 ENABLE_CAMERAS=1 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
 ./isaaclab.sh -p /workspace/collect_tiled_with_checkpoint.py \
   --task Isaac-Open-Drawer-Franka-v0 \
-  --num_envs 2 \
+  --num_envs 20 \
   --env_spacing 6.0 \
   --steps 60 \
-  --num_episodes 2 \
+  --num_episodes 20 \
   --width 320 \
   --height 240 \
   --checkpoint /workspace/model_trained.pt \
@@ -40,6 +41,7 @@ ENABLE_CAMERAS=1 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
   --sim_or_real sim \
   --fps 30 \
   --enable_wrist_camera \
+  --enable_top_camera \
   --headless"
 
 # Step 4: Copy results

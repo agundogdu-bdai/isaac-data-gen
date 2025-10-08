@@ -73,10 +73,10 @@ This ensures diversity in the dataset without manual intervention.
 
 ## Camera System
 
-### Dual Camera Setup
+### Triple Camera Setup
 
 **Camera 0 (Overview/Tiled Camera):**
-- **Purpose**: Bird's-eye view of entire workspace
+- **Purpose**: Side-angle view of entire workspace
 - **Prim Path**: `{ENV_REGEX_NS}/tiled_camera` (one per env)
 - **Position**: Offset from env origin (default: `[-2.0, 0.5, 2.1]`)
 - **Fixed**: Doesn't move during episode
@@ -89,13 +89,51 @@ This ensures diversity in the dataset without manual intervention.
 - **Dynamic**: Updates with robot motion
 - **Use Case**: Fine-grained manipulation, object grasp details
 
-### Why Two Cameras?
+**Camera 2 (Top Camera):**
+- **Purpose**: Top-down bird's-eye view
+- **Prim Path**: `{ENV_REGEX_NS}/top_camera` (one per env)
+- **Position**: Static, directly above environment (default: `[0.0, 0.0, 3.0]`)
+- **Fixed**: Doesn't move during episode
+- **Use Case**: Overhead perspective, spatial relationships, trajectory planning
 
-Vision-based policies benefit from:
-- **Overview camera**: Provides spatial context (where is the robot relative to the drawer?)
-- **Wrist camera**: Provides manipulation details (is the gripper aligned with the handle?)
+### Why Three Cameras?
 
-Combined, they enable better learning of manipulation skills.
+Vision-based policies benefit from multiple viewpoints:
+- **Overview camera**: Side-angle context (where is the robot relative to the drawer?)
+- **Wrist camera**: Manipulation details (is the gripper aligned with the handle?)
+- **Top camera**: Overhead planning view (robot's trajectory and spatial layout)
+
+Combined, they provide comprehensive visual coverage for robust policy learning.
+
+---
+
+## Top Camera Implementation
+
+### Static Positioning
+
+The top camera is positioned once at initialization:
+
+```
+Position: [0.0, 0.0, 3.0] from environment origin
+  - Directly above the workspace
+  - 3 meters high (adjustable)
+  
+Target: [0.4, 0.0, 0.5] from environment origin
+  - Looking at task workspace center
+  - Where robot-cabinet interaction happens
+```
+
+**Configuration**:
+- Set via `--top_cam_offset` and `--top_tgt_offset`
+- Position is in **world/environment frame**, not robot frame
+- Static throughout episode (no dynamic updates needed)
+- Provides consistent overhead view for all timesteps
+
+**Use Cases**:
+- Spatial planning and trajectory understanding
+- Top-down object relationships
+- Complementary to side and wrist views
+- Useful for tasks requiring bird's-eye context
 
 ---
 
@@ -145,22 +183,24 @@ Instead of separate files per camera, we use a **unified multi-camera format**:
 # Single color dataset with camera dimension
 color.shape = (T, N_cams, H, W, 3)
 
-# Example with dual cameras:
-color.shape = (60, 2, 320, 240, 3)
+# Example with triple cameras:
+color.shape = (60, 3, 320, 240, 3)
 #              T   cams H    W   RGB
 ```
 
 **Benefits**:
 - Single file per episode (easier to manage)
-- Natural indexing: `color[:, 0]` = overview, `color[:, 1]` = wrist
+- Natural indexing: `color[:, 0]` = overview, `color[:, 1]` = wrist, `color[:, 2]` = top
 - Standard format for multi-view datasets
 - Intrinsics and extrinsics also concatenated along camera dimension
+- Flexible: N_cams = 1, 2, or 3 depending on flags
 
 ### MP4 Videos
 
 Separate MP4 files are still saved for easy viewing:
 - `camera_0/episode_XXX.mp4` - Overview camera
-- `camera_1/episode_XXX.mp4` - Wrist camera
+- `camera_1/episode_XXX.mp4` - Wrist camera (if enabled)
+- `camera_2/episode_XXX.mp4` - Top camera (if enabled)
 
 These are redundant with HDF5 but useful for quick inspection.
 
@@ -689,29 +729,31 @@ Four clear steps:
 
 ### Adding More Cameras
 
-To add a third camera (e.g., side view):
+The system already supports three cameras. To add a fourth camera (e.g., side view):
 
-1. Add to scene config:
+1. Add to scene config in `collect_tiled_with_checkpoint.py`:
 ```python
 env_cfg.scene.side_camera = TiledCameraCfg(...)
 ```
 
-2. Get reference in VPLSaver:
+2. Get reference in `vpl_saver.py`:
 ```python
 side_cam = scene.sensors.get('side_camera')
 ```
 
-3. Update and capture:
+3. Update and capture in `store()`:
 ```python
 side_cam.update(dt=scene.physics_dt)
 side_rgb = side_cam.data.output["rgb"]
 ```
 
-4. Concatenate in HDF5:
+4. Concatenate in HDF5 in `write()`:
 ```python
-frames = np.concatenate([frames_cam0, frames_cam1, frames_cam2], axis=1)
-# Shape: (T, 3, H, W, C)
+frames = np.concatenate([frames_cam0, frames_cam1, frames_cam2, frames_cam3], axis=1)
+# Shape: (T, 4, H, W, C)
 ```
+
+5. Add MP4 saving for `camera_3/` directory
 
 ### Supporting Other Tasks
 

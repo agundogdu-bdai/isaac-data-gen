@@ -124,6 +124,32 @@ ENABLE_CAMERAS=1 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
   --headless"
 ```
 
+Triple camera (overview + wrist + top):
+```bash
+docker exec -it isaaclab-test bash -c "cd /workspace/isaaclab && \
+ENABLE_CAMERAS=1 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
+./isaaclab.sh -p /workspace/collect_tiled_with_checkpoint.py \
+  --task Isaac-Open-Drawer-Franka-v0 \
+  --num_envs 20 \
+  --env_spacing 5.0 \
+  --steps 60 \
+  --num_episodes 2 \
+  --width 320 \
+  --height 240 \
+  --checkpoint /workspace/model_trained.pt \
+  --data_root /workspace/datasets/vpl_tiled \
+  --robot_name franka \
+  --sim_or_real sim \
+  --fps 30 \
+  --enable_wrist_camera \
+  --wrist_cam_offset -0.05 0.0 0.08 \
+  --wrist_cam_look_offset 0.25 0.0 0.0 \
+  --enable_top_camera \
+  --top_cam_offset 0.0 0.0 3.0 \
+  --top_tgt_offset 0.4 0.0 0.5 \
+  --headless"
+```
+
 ---
 
 ## Copy Dataset to Host
@@ -175,6 +201,12 @@ vlc vpl_tiled/*/episode_000/camera_0/episode_000.mp4
 # View wrist camera
 vlc vpl_tiled/*/episode_000/camera_1/episode_000.mp4
 
+# View top camera
+vlc vpl_tiled/*/episode_000/camera_2/episode_000.mp4
+
+# View all 3 cameras together
+vlc vpl_tiled/*/episode_000/camera_*/episode_000.mp4
+
 # Inspect HDF5
 python3 -c "import h5py; f = h5py.File('vpl_tiled/*/episode_000/episode_000.h5'); print(list(f.keys())); print('color shape:', f['color'].shape)"
 ```
@@ -188,14 +220,15 @@ python3 -c "import h5py; f = h5py.File('vpl_tiled/*/episode_000/episode_000.h5')
 vpl_tiled/
 └── Isaac-Open-Drawer-Franka-v0_sim_franka_YYYYMMDD_HHMMSS/
     ├── episode_000/
-    │   ├── camera_0/episode_000.mp4
-    │   ├── camera_1/episode_000.mp4  # If wrist camera enabled
+    │   ├── camera_0/episode_000.mp4  # Overview camera
+    │   ├── camera_1/episode_000.mp4  # Wrist camera (if enabled)
+    │   ├── camera_2/episode_000.mp4  # Top camera (if enabled)
     │   └── episode_000.h5
     └── metadata.json
 ```
 
 **HDF5 Datasets:**
-- `color`: `(T, N_cams, H, W, 3)` - RGB frames (N_cams=1 or 2)
+- `color`: `(T, N_cams, H, W, 3)` - RGB frames (N_cams=1-3 depending on flags)
 - `action`: `(T, action_dim)` - Actions
 - `proprio`: `(T, obs_dim)` - Proprioception
 - `intrinsics`: `(N_cams, 3, 3)` - Camera intrinsics
@@ -252,6 +285,9 @@ docker logs isaaclab-test --tail 100
 | `--enable_wrist_camera` | False | Enable wrist camera |
 | `--wrist_cam_offset` | `[-0.05, 0.0, 0.08]` | Wrist camera position in EE frame |
 | `--wrist_cam_look_offset` | `[0.25, 0.0, 0.0]` | Wrist camera look-at in EE frame |
+| `--enable_top_camera` | False | Enable top-view camera |
+| `--top_cam_offset` | `[0.0, 0.0, 3.0]` | Top camera position from env origin |
+| `--top_tgt_offset` | `[0.4, 0.0, 0.5]` | Top camera look-at from env origin |
 
 ---
 
@@ -259,6 +295,7 @@ docker logs isaaclab-test --tail 100
 
 - **FULL_GUIDE.md** - All terminal commands organized by workflow step
 - **WHAT_IT_DOES.md** - Detailed explanations of implementation and design decisions
+- **TOP_CAMERA_SETUP.md** - Third camera setup guide and configuration
 
 ---
 
@@ -275,5 +312,8 @@ docker logs isaaclab-test --tail 100
 
 - Each parallel environment = separate episode with randomized initial state
 - Total episodes = `num_envs × num_episodes`
-- Wrist camera positioned behind/above gripper to avoid clipping with robot body
-- Camera offsets are in end-effector frame: X=forward (fingers), Y=side, Z=up
+- **Wrist camera**: Positioned behind/above gripper to avoid clipping with robot body
+- **Top camera**: Static bird's-eye view from above the environment
+- Camera offsets are in end-effector frame (wrist) or env origin (top)
+  - EE frame: X=forward (fingers), Y=side, Z=up
+  - Env frame: X=forward, Y=side, Z=up

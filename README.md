@@ -61,7 +61,7 @@ ENABLE_CAMERAS=1 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
 
 ## Features
 
-- **Dual Camera Support**: Overview camera + wrist-mounted camera following end-effector
+- **Triple Camera Support**: Overview camera + wrist-mounted camera + top-view camera
 - **MP4-Only Storage**: No intermediate PNGs (memory efficient)
 - **Unified HDF5 Format**: Single `color` dataset with shape `(T, N_cams, H, W, 3)`
 - **Per-Episode Resets**: Different initial conditions via `env.reset()`
@@ -77,13 +77,14 @@ vpl_tiled/
     ├── episode_000/
     │   ├── camera_0/episode_000.mp4  # Overview camera
     │   ├── camera_1/episode_000.mp4  # Wrist camera (if enabled)
-    │   └── episode_000.h5            # All data: actions, proprio, color (T,2,H,W,3)
+    │   ├── camera_2/episode_000.mp4  # Top camera (if enabled)
+    │   └── episode_000.h5            # All data: actions, proprio, color (T,N,H,W,3)
     ├── episode_001/
     └── metadata.json
 ```
 
 **HDF5 Contents:**
-- `color`: `(T, N_cams, H, W, 3)` - RGB from all cameras (N_cams=2 with wrist)
+- `color`: `(T, N_cams, H, W, 3)` - RGB from all cameras (N_cams=1-3 depending on flags)
 - `action`: `(T, action_dim)` - Actions
 - `proprio`: `(T, obs_dim)` - Proprioceptive observations
 - `intrinsics`: `(N_cams, 3, 3)` - Camera intrinsics
@@ -96,6 +97,7 @@ vpl_tiled/
 
 - **FULL_GUIDE.md** - Complete command reference with minimal explanations
 - **WHAT_IT_DOES.md** - Detailed explanations of how everything works
+- **TOP_CAMERA_SETUP.md** - Third camera setup guide and configuration
 
 ---
 
@@ -120,9 +122,16 @@ vpl_tiled/
 # Frame sampling (reduce IO)
 --video_interval 2  # Save every 2nd frame, playback FPS auto-adjusts
 
+# Enable all 3 cameras
+--enable_wrist_camera --enable_top_camera
+
 # Adjust wrist camera position
 --wrist_cam_offset -0.05 0.0 0.08       # Behind and above gripper
 --wrist_cam_look_offset 0.25 0.0 0.0    # Look forward along gripper axis
+
+# Adjust top camera position
+--top_cam_offset 0.0 0.0 3.0            # 3m above environment origin
+--top_tgt_offset 0.4 0.0 0.5            # Look at workspace center
 ```
 
 ---
