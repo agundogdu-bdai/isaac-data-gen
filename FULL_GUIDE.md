@@ -13,6 +13,31 @@ docker build -t isaaclab:2.2-ray \
 
 ---
 
+## Push Docker Image
+
+```bash
+# 1. Authenticate (if needed)
+gcloud auth configure-docker us-docker.pkg.dev
+
+# 2. Tag your image
+docker tag isaaclab:2.2-ray \
+  us-docker.pkg.dev/engineering-380817/bdai/isaaclab-data-gen:latest
+
+# 3. Push
+docker push us-docker.pkg.dev/engineering-380817/bdai/isaaclab-data-gen:latest
+
+# 4. Verify
+gcloud artifacts docker images list \
+  us-docker.pkg.dev/engineering-380817/bdai/isaaclab-data-gen
+```
+
+**Notes:**
+- Image size: ~18GB (push takes 10-20 min on first upload)
+- Includes: Isaac Lab 2.2.0, Ray 2.31.0, TorchRL 0.8.1, triple camera support
+- Registry: `us-docker.pkg.dev/engineering-380817/bdai/`
+
+---
+
 ## Run Container
 
 ```bash
