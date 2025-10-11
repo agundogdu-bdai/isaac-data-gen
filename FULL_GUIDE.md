@@ -34,6 +34,7 @@ gcloud artifacts docker images list \
 **Notes:**
 - Image size: ~18GB (push takes 10-20 min on first upload)
 - Includes: Isaac Lab 2.2.0, Ray 2.31.0, TorchRL 0.8.1, triple camera support
+- Additional dependencies: Lightning, Hydra, Wandb, Transformers, Diffusers, Open3D, and more (see Dockerfile for full list)
 - Registry: `us-docker.pkg.dev/engineering-380817/bdai/`
 
 ---
@@ -330,6 +331,54 @@ docker logs isaaclab-test --tail 100
 - `vpl_saver.py` - Dataset writer with multi-camera support (452 lines)
 - `run_collection.sh` - Quick runner script (62 lines)
 - `isaaclab-tiledcam-starter/Dockerfile1.isaaclab-ray` - Docker image
+
+---
+
+## Included Dependencies
+
+The Docker image includes the following additional packages beyond Isaac Lab base:
+
+**Core ML & Data Processing:**
+- `lightning==2.5.1` - PyTorch Lightning for training
+- `hydra-core==1.3.2` - Configuration management
+- `wandb[media,workspaces]>=0.20.0` - Experiment tracking
+- `transformers>=4.42.3` - Hugging Face transformers
+- `diffusers==0.29.0` - Diffusion models
+- `timm>=1.0.11,<=1.0.15` - PyTorch image models
+- `einops==0.8.0` - Tensor operations
+- `beartype==0.18.5` - Runtime type checking
+
+**Computer Vision:**
+- `opencv-python>=4.6.0.66,<=4.10.0.84` - OpenCV
+- `albumentations>=2.0.0` - Image augmentation
+- `open3d==0.18.0` - 3D data processing
+- `pillow==10.2.0` - Image processing
+- `moviepy>=1.0.3` - Video editing
+
+**Data & Storage:**
+- `h5py>=3.9.0` - HDF5 file format
+- `pandas>=2.1.0` - Data manipulation
+- `pyarrow>=6.0.1` - Apache Arrow
+- `gcsfs==2023.6.0` - Google Cloud Storage filesystem
+
+**Distributed Computing:**
+- `ray[default,data,train,tune,serve]==2.31.0` - Distributed computing
+- `aiohttp>=3.11.15,<3.12` - Async HTTP client
+
+**Simulation & Robotics:**
+- `gymnasium==0.29.1` - RL environments
+- `spatialmath-python~=1.1.13` - Spatial mathematics
+
+**Utilities:**
+- `numpy>=1.26,<=2.2.6` - Numerical computing
+- `omegaconf>=2.2,<2.4` - Configuration files
+- `scikit-learn>=1.5.0` - Machine learning utilities
+- `pydantic` - Data validation
+- `addict==2.4.0` - Dict access patterns
+- `tqdm` - Progress bars
+- `psutil` - System utilities
+- `filelock` - File locking
+- `google-auth>=1.2` - Google Cloud authentication
 
 ---
 
