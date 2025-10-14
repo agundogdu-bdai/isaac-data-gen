@@ -294,6 +294,7 @@ def make_saver(args):
         enable_top_camera=args.enable_top_camera,
         top_cam_offset=args.top_cam_offset,
         top_tgt_offset=args.top_tgt_offset,
+        wrist_auto_follow=False,  # Manual positioning for backward compatibility
     )
     print(f"[INFO] Writing VPL dataset to: {base_dir}")
     print(f"[INFO] Video FPS (effective): {effective_fps}")

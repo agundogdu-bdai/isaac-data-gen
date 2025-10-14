@@ -56,6 +56,47 @@ RUN /usr/local/bin/pip install --no-cache-dir \
     "google-auth>=1.2" \
     gymnasium==0.29.1
 
+# Install imageio with ffmpeg support for MP4 video encoding
+RUN /usr/local/bin/pip install --no-cache-dir "imageio[ffmpeg]"
+
+# Copy custom camera environment configuration and collection scripts
+COPY joint_pos_env_camera_cfg.py /tmp/joint_pos_env_camera_cfg.py
+COPY collect_with_camera_env.py /workspace/collect_with_camera_env.py
+COPY vpl_saver.py /workspace/vpl_saver.py
+
+# Install custom camera-enabled environment into IsaacLab
+RUN set -euxo pipefail && \
+    mkdir -p /workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/cabinet/config/franka && \
+    cp /tmp/joint_pos_env_camera_cfg.py /workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/cabinet/config/franka/
+
+RUN cat >> /workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/cabinet/config/franka/__init__.py << 'EOF'
+
+##
+# Camera-Enabled Environments (Custom) - Pre-installed
+##
+
+gym.register(
+    id="Isaac-Open-Drawer-Franka-Camera-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_camera_cfg:FrankaCabinetEnvCameraCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Open-Drawer-Franka-Camera-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_camera_cfg:FrankaCabinetEnvCameraCfg_PLAY",
+    },
+    disable_env_checker=True,
+)
+EOF
+
+RUN rm /tmp/joint_pos_env_camera_cfg.py && \
+    echo "✓ Custom camera environments installed: Isaac-Open-Drawer-Franka-Camera-v0"
+
 WORKDIR /workspace/isaaclab
 
 ENTRYPOINT ["/workspace/isaaclab/isaaclab.sh", "-p"]

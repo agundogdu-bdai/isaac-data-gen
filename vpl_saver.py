@@ -31,6 +31,8 @@ class VPLSaver:
         enable_top_camera: bool = False,
         top_cam_offset: list | tuple = (0.0, 0.0, 3.0),
         top_tgt_offset: list | tuple = (0.4, 0.0, 0.5),
+        enable_side_camera: bool = False,
+        wrist_auto_follow: bool = False,
     ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -43,6 +45,8 @@ class VPLSaver:
         self.enable_top_camera = enable_top_camera
         self.top_cam_offset = np.asarray(top_cam_offset, dtype=np.float32)
         self.top_tgt_offset = np.asarray(top_tgt_offset, dtype=np.float32)
+        self.enable_side_camera = enable_side_camera
+        self.wrist_auto_follow = wrist_auto_follow
         
         # Storage for each environment
         self.episode_data = {}
@@ -65,8 +69,12 @@ class VPLSaver:
         """
         num_envs = actions.shape[0]
         
-        # Get camera data - use same lookup logic as main script
+        # Get camera data - support both tiled_camera (legacy) and separate cameras (new)
         scene = env.unwrapped.scene
+        cam = None
+        use_separate_cameras = False
+        
+        # Try to find tiled_camera (legacy support)
         if hasattr(scene, 'tiled_camera'):
             cam = scene.tiled_camera
         elif hasattr(scene, 'sensors'):
@@ -75,22 +83,30 @@ class VPLSaver:
                 cam = scene.sensors['tiled_camera']
             elif hasattr(scene.sensors, 'tiled_camera'):
                 cam = scene.sensors.tiled_camera
-            else:
-                raise RuntimeError(f"Could not find tiled_camera. Available sensors: {list(scene.sensors.keys()) if isinstance(scene.sensors, dict) else dir(scene.sensors)}")
-        else:
-            raise RuntimeError(f"Could not find tiled_camera. Scene attributes: {[k for k in dir(scene) if not k.startswith('_')]}")
         
-        # Update camera only if we intend to store frames on this step
-        if store_frame:
-            cam.update(dt=scene.physics_dt)
-            rgb_all = cam.data.output["rgb"]  # [num_envs, H, W, 3] or [num_envs, 3, H, W]
-            # Intrinsics per env (assumed constant across time)
-            if hasattr(cam.data, "intrinsic_matrices"):
-                intrinsic_all = cam.data.intrinsic_matrices
+        # If no tiled_camera, use separate cameras (new camera environment)
+        if cam is None:
+            use_separate_cameras = True
+            # Will populate rgb_all from top_camera or wrist_camera below
+            rgb_all = None
+            intrinsic_all = None
+            extrinsic_all = None
+        else:
+            # Update tiled camera only if we intend to store frames on this step
+            if store_frame:
+                cam.update(dt=scene.physics_dt)
+                rgb_all = cam.data.output["rgb"]  # [num_envs, H, W, 3] or [num_envs, 3, H, W]
+                # Intrinsics per env (assumed constant across time)
+                if hasattr(cam.data, "intrinsic_matrices"):
+                    intrinsic_all = cam.data.intrinsic_matrices
+                else:
+                    intrinsic_all = None
+                # Try to get extrinsics (4x4) if available on sensor data
+                extrinsic_all = getattr(cam.data, "extrinsic_matrices", None)
             else:
+                rgb_all = None
                 intrinsic_all = None
-            # Try to get extrinsics (4x4) if available on sensor data
-            extrinsic_all = getattr(cam.data, "extrinsic_matrices", None)
+                extrinsic_all = None
         
         # Wrist camera: get camera reference
         wrist_rgb_all = None
@@ -118,15 +134,19 @@ class VPLSaver:
         obs_dict = env.unwrapped.observation_manager.compute()
         robot_articulation = env.unwrapped.scene._articulations.get("robot")
         
-        # Update wrist camera pose from end-effector
+        # Update wrist camera pose from end-effector (only if not auto-following)
         if self.enable_wrist_camera and wrist_cam is not None:
-            # Get EE body pose (last body is typically the end-effector)
-            ee_pos = robot_articulation.data.body_pos_w[:, -1, :]
-            ee_rot = robot_articulation.data.body_quat_w[:, -1, :]
+            if not self.wrist_auto_follow:
+                # Manual positioning: compute camera poses from EE frame
+                # Get EE body pose (last body is typically the end-effector)
+                ee_pos = robot_articulation.data.body_pos_w[:, -1, :]
+                ee_rot = robot_articulation.data.body_quat_w[:, -1, :]
+                
+                # Compute camera poses from EE frame
+                positions, targets = self._compute_wrist_camera_poses(ee_pos, ee_rot)
+                wrist_cam.set_world_poses_from_view(positions, targets)
             
-            # Compute camera poses from EE frame
-            positions, targets = self._compute_wrist_camera_poses(ee_pos, ee_rot)
-            wrist_cam.set_world_poses_from_view(positions, targets)
+            # Update camera to capture frame (works for both manual and auto-follow)
             wrist_cam.update(dt=scene.physics_dt)
             
             if store_frame:
@@ -142,6 +162,52 @@ class VPLSaver:
                 top_rgb_all = top_cam.data.output["rgb"]
                 top_intrinsic_all = top_cam.data.intrinsic_matrices
                 top_extrinsic_all = getattr(top_cam.data, "extrinsic_matrices", None)
+        
+        # Side camera: get camera reference
+        side_rgb_all = None
+        side_intrinsic_all = None
+        side_extrinsic_all = None
+        side_cam = None
+        if self.enable_side_camera:
+            if hasattr(scene, 'side_camera'):
+                side_cam = scene.side_camera
+            elif hasattr(scene, 'sensors') and isinstance(scene.sensors, dict):
+                side_cam = scene.sensors.get('side_camera')
+        
+        # Update side camera (static position, just update for frame capture)
+        if self.enable_side_camera and side_cam is not None:
+            side_cam.update(dt=scene.physics_dt)
+            
+            if store_frame:
+                side_rgb_all = side_cam.data.output["rgb"]
+                side_intrinsic_all = side_cam.data.intrinsic_matrices
+                side_extrinsic_all = getattr(side_cam.data, "extrinsic_matrices", None)
+        
+        # If no tiled camera is available, use top camera as main camera (camera_0)
+        # This ensures rgb_frames is populated even without tiled_camera
+        # Track if we're using top camera as main to avoid duplication
+        top_is_main_camera = False
+        wrist_is_main_camera = False
+        if use_separate_cameras and rgb_all is None and store_frame:
+            if top_rgb_all is not None:
+                rgb_all = top_rgb_all
+                intrinsic_all = top_intrinsic_all
+                extrinsic_all = top_extrinsic_all
+                top_is_main_camera = True
+                # Clear top camera data to avoid duplication in camera_2
+                top_rgb_all = None
+                top_intrinsic_all = None
+                top_extrinsic_all = None
+            elif wrist_rgb_all is not None:
+                # Fallback to wrist camera if no top camera
+                rgb_all = wrist_rgb_all
+                intrinsic_all = wrist_intrinsic_all
+                extrinsic_all = wrist_extrinsic_all
+                wrist_is_main_camera = True
+                # Clear wrist camera data to avoid duplication in camera_1
+                wrist_rgb_all = None
+                wrist_intrinsic_all = None
+                wrist_extrinsic_all = None
 
         # Store for each environment
         for env_idx in range(num_envs):
@@ -150,6 +216,7 @@ class VPLSaver:
                     'rgb_frames': [],
                     'wrist_rgb_frames': [],
                     'top_rgb_frames': [],
+                    'side_rgb_frames': [],
                     'actions': [],
                     'proprio': [],
                     'timestamps': [],
@@ -161,8 +228,8 @@ class VPLSaver:
                 self.episode_data[env_idx]['timestep'] += 1
                 continue
             
-            # Optionally process and store RGB (tiled camera)
-            if store_frame:
+            # Optionally process and store RGB (tiled camera - only if available)
+            if store_frame and rgb_all is not None:
                 rgb = rgb_all[env_idx].detach().cpu().numpy()
                 if rgb.ndim == 3 and rgb.shape[0] in (3, 4):  # CHW -> HWC
                     rgb = np.transpose(rgb, (1, 2, 0))
@@ -213,6 +280,23 @@ class VPLSaver:
                     if 'top_extrinsics' not in self.episode_data[env_idx]:
                         self.episode_data[env_idx]['top_extrinsics'] = []
                     self.episode_data[env_idx]['top_extrinsics'].append(top_extrinsic_all[env_idx].detach().cpu().numpy())
+            
+            # Optionally process and store side RGB
+            if store_frame and side_rgb_all is not None:
+                rgb_s = side_rgb_all[env_idx].detach().cpu().numpy()
+                if rgb_s.ndim == 3 and rgb_s.shape[0] in (3, 4):
+                    rgb_s = np.transpose(rgb_s, (1, 2, 0))
+                if rgb_s.shape[-1] == 4:
+                    rgb_s = rgb_s[..., :3]
+                if rgb_s.dtype != np.uint8:
+                    rgb_s = np.clip(rgb_s * 255.0, 0, 255).astype(np.uint8)
+                self.episode_data[env_idx]['side_rgb_frames'].append(rgb_s)
+                if 'side_intrinsics' not in self.episode_data[env_idx] and side_intrinsic_all is not None:
+                    self.episode_data[env_idx]['side_intrinsics'] = side_intrinsic_all[env_idx].detach().cpu().numpy()
+                if side_extrinsic_all is not None:
+                    if 'side_extrinsics' not in self.episode_data[env_idx]:
+                        self.episode_data[env_idx]['side_extrinsics'] = []
+                    self.episode_data[env_idx]['side_extrinsics'].append(side_extrinsic_all[env_idx].detach().cpu().numpy())
             
             self.episode_data[env_idx]['actions'].append(actions[env_idx].detach().cpu().numpy())
             
@@ -268,6 +352,7 @@ class VPLSaver:
                     'rgb_frames': [],
                     'wrist_rgb_frames': [],
                     'top_rgb_frames': [],
+                    'side_rgb_frames': [],
                     'actions': [],
                     'proprio': [],
                     'timestamps': [],
@@ -282,6 +367,7 @@ class VPLSaver:
                     'rgb_frames': [],
                     'wrist_rgb_frames': [],
                     'top_rgb_frames': [],
+                    'side_rgb_frames': [],
                     'actions': [],
                     'proprio': [],
                     'timestamps': [],
@@ -300,7 +386,7 @@ class VPLSaver:
             if 'wrist_rgb_frames' in data and len(data['wrist_rgb_frames']) > 0:
                 camera1_dir.mkdir(parents=True, exist_ok=True)
             camera2_dir = episode_dir / "camera_2"
-            if 'top_rgb_frames' in data and len(data['top_rgb_frames']) > 0:
+            if 'side_rgb_frames' in data and len(data['side_rgb_frames']) > 0:
                 camera2_dir.mkdir(parents=True, exist_ok=True)
             
             # Save videos
@@ -314,10 +400,10 @@ class VPLSaver:
                 iio.imwrite(video_wrist_path, data['wrist_rgb_frames'], fps=self.fps)
                 print(f"  ✓ Saved episode {self.episode_counter} (wrist): {video_wrist_path.relative_to(self.base_dir)}")
             
-            if save_to_video and 'top_rgb_frames' in data and len(data['top_rgb_frames']) > 0:
-                video_top_path = camera2_dir / f"episode_{self.episode_counter:03d}.mp4"
-                iio.imwrite(video_top_path, data['top_rgb_frames'], fps=self.fps)
-                print(f"  ✓ Saved episode {self.episode_counter} (top): {video_top_path.relative_to(self.base_dir)}")
+            if save_to_video and 'side_rgb_frames' in data and len(data['side_rgb_frames']) > 0:
+                video_side_path = camera2_dir / f"episode_{self.episode_counter:03d}.mp4"
+                iio.imwrite(video_side_path, data['side_rgb_frames'], fps=self.fps)
+                print(f"  ✓ Saved episode {self.episode_counter} (side): {video_side_path.relative_to(self.base_dir)}")
             
             # Assemble arrays for H5 only
             proprio_array = np.stack(data['proprio'], axis=0) if data['proprio'] else None
@@ -360,6 +446,11 @@ class VPLSaver:
                         frames_cam2 = frames_cam2[:, None, ...]  # (T, 1, H, W, C)
                         cam_list.append(frames_cam2)
                     
+                    if 'side_rgb_frames' in data and len(data['side_rgb_frames']) > 0:
+                        frames_cam3 = np.stack(data['side_rgb_frames'], axis=0)  # (T, H, W, C)
+                        frames_cam3 = frames_cam3[:, None, ...]  # (T, 1, H, W, C)
+                        cam_list.append(frames_cam3)
+                    
                     # Concatenate along camera dimension: (T, N_cams, H, W, C)
                     frames = np.concatenate(cam_list, axis=1)
                     
@@ -375,6 +466,10 @@ class VPLSaver:
                     if 'top_intrinsics' in data:
                         intr_cam2 = data['top_intrinsics'][None, ...]  # (1, 3, 3)
                         intr_list.append(intr_cam2)
+                    
+                    if 'side_intrinsics' in data:
+                        intr_cam3 = data['side_intrinsics'][None, ...]  # (1, 3, 3)
+                        intr_list.append(intr_cam3)
                     
                     intrinsics = np.concatenate(intr_list, axis=0)  # (N_cams, 3, 3)
                     f.create_dataset("intrinsics", data=intrinsics)
@@ -395,6 +490,11 @@ class VPLSaver:
                         extr_cam2 = np.stack(data['top_extrinsics'], axis=0)  # (T, 4, 4)
                         extr_cam2 = extr_cam2[:, None, ...]  # (T, 1, 4, 4)
                         extr_list.append(extr_cam2)
+                    
+                    if 'side_extrinsics' in data and len(data['side_extrinsics']) > 0:
+                        extr_cam3 = np.stack(data['side_extrinsics'], axis=0)  # (T, 4, 4)
+                        extr_cam3 = extr_cam3[:, None, ...]  # (T, 1, 4, 4)
+                        extr_list.append(extr_cam3)
                     
                     extrinsics = np.concatenate(extr_list, axis=1)  # (T, N_cams, 4, 4)
                     
@@ -445,6 +545,7 @@ class VPLSaver:
                 'rgb_frames': [],
                 'wrist_rgb_frames': [],
                 'top_rgb_frames': [],
+                'side_rgb_frames': [],
                 'actions': [],
                 'proprio': [],
                 'timestamps': [],

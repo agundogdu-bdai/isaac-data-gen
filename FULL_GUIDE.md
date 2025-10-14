@@ -1,14 +1,72 @@
-# Isaac Data Gen - Full Command Guide
-
-Complete terminal commands for building, training, and collecting datasets.
+# Isaac Data Gen - Command Reference
 
 ---
 
-## Build Docker Image
+## Quick Start
 
+### 1. Build Docker Image
 ```bash
 docker build -t isaaclab:2.2-ray \
   -f isaaclab-tiledcam-starter/Dockerfile1.isaaclab-ray .
+```
+
+### 2. Run Container
+```bash
+docker run -d --gpus all --name isaaclab-test \
+  --shm-size 16g \
+  -v $(pwd):$(pwd) \
+  --entrypoint /bin/bash \
+  isaaclab:2.2-ray -lc "sleep infinity"
+```
+
+### 2.5. Clean GPU Processes (if needed)
+```bash
+# Check GPU usage (run on host)
+nvtop  # or nvidia-smi
+
+# Option 1: Restart container (cleanest)
+docker restart isaaclab-test
+
+# Option 2: Kill Python processes in container
+docker exec isaaclab-test bash -c "pkill -9 python"
+
+# Option 3: Stop and remove old container, start fresh
+docker stop isaaclab-test
+docker rm isaaclab-test
+docker run -d --gpus all --name isaaclab-test \
+  --shm-size 16g \
+  -v $(pwd):$(pwd) \
+  --entrypoint /bin/bash \
+  isaaclab:2.2-ray -lc "sleep infinity"
+```
+
+### 3. Train Policy (if needed)
+```bash
+# Fast training for testing (~4 min, no video recording)
+docker exec isaaclab-test bash -c "cd /workspace/isaaclab && \
+ENABLE_CAMERAS=0 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
+  --task Isaac-Open-Drawer-Franka-v0 \
+  --num_envs 512 \
+  --max_iterations 100 \
+  --headless"
+
+# Copy checkpoint (find the most recent run and copy last model)
+docker exec isaaclab-test bash -c "
+  LATEST_RUN=\$(ls -td /workspace/isaaclab/logs/rsl_rl/franka_open_drawer/2025-* | head -1)
+  LATEST_MODEL=\$(ls -t \${LATEST_RUN}/model_*.pt | head -1)
+  cp \${LATEST_MODEL} /workspace/model_trained.pt
+  echo 'Copied:' \${LATEST_MODEL}
+"
+
+# Or manually specify the checkpoint
+docker exec isaaclab-test bash -c "cp /workspace/isaaclab/logs/rsl_rl/franka_open_drawer/2025-10-12_21-23-43/model_19.pt /workspace/model_trained.pt"
+```
+
+### 4. Collect Dataset
+```bash
+# Quick method
+./run_collection.sh
 ```
 
 ---
@@ -16,26 +74,18 @@ docker build -t isaaclab:2.2-ray \
 ## Push Docker Image
 
 ```bash
-# 1. Authenticate (if needed)
-gcloud auth configure-docker us-docker.pkg.dev
 
-# 2. Tag your image
+# Tag image
 docker tag isaaclab:2.2-ray \
   us-docker.pkg.dev/engineering-380817/bdai/isaaclab-data-gen:latest
 
-# 3. Push
+# Push
 docker push us-docker.pkg.dev/engineering-380817/bdai/isaaclab-data-gen:latest
 
-# 4. Verify
+# Verify
 gcloud artifacts docker images list \
   us-docker.pkg.dev/engineering-380817/bdai/isaaclab-data-gen
 ```
-
-**Notes:**
-- Image size: ~18GB (push takes 10-20 min on first upload)
-- Includes: Isaac Lab 2.2.0, Ray 2.31.0, TorchRL 0.8.1, triple camera support
-- Additional dependencies: Lightning, Hydra, Wandb, Transformers, Diffusers, Open3D, and more (see Dockerfile for full list)
-- Registry: `us-docker.pkg.dev/engineering-380817/bdai/`
 
 ---
 
@@ -49,17 +99,25 @@ docker run -d --gpus all --name isaaclab-test \
   isaaclab:2.2-ray -lc "sleep infinity"
 ```
 
-Verify:
-```bash
-docker exec -it isaaclab-test python -c "import sys; print(sys.version)"
-```
-
 ---
 
-## Train RL Policy
+## Train RL Policy (Optional)
 
+**Note:** Training uses the standard environment (no cameras) for faster training.
+
+### Option 1: Full Training (Recommended)
 ```bash
-docker exec -it isaaclab-test bash -c "cd /workspace/isaaclab && \
+# Fast version (no video recording, ~45-60 min)
+docker exec isaaclab-test bash -c "cd /workspace/isaaclab && \
+ENABLE_CAMERAS=0 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
+  --task Isaac-Open-Drawer-Franka-v0 \
+  --num_envs 1024 \
+  --max_iterations 3000 \
+  --headless"
+
+# With WandB logging (optional)
+docker exec -e WANDB_API_KEY=$WANDB_API_KEY isaaclab-test bash -c "cd /workspace/isaaclab && \
 ENABLE_CAMERAS=0 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
 ./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
   --task Isaac-Open-Drawer-Franka-v0 \
@@ -67,47 +125,119 @@ ENABLE_CAMERAS=0 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
   --max_iterations 3000 \
   --logger wandb \
   --headless"
+
+# With video recording (slower, ~2-3 hours, useful for monitoring)
+docker exec -e WANDB_API_KEY=$WANDB_API_KEY isaaclab-test bash -c "cd /workspace/isaaclab && \
+ENABLE_CAMERAS=0 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
+  --task Isaac-Open-Drawer-Franka-v0 \
+  --num_envs 1024 \
+  --max_iterations 3000 \
+  --logger wandb \
+  --video \
+  --video_interval 100 \
+  --headless"
+```
+Copy checkpoint to collection location:
+```bash
+# Find and copy the latest checkpoint
+docker exec isaaclab-test bash -c "
+  LATEST_RUN=\$(ls -td /workspace/isaaclab/logs/rsl_rl/franka_open_drawer/2025-* | head -1)
+  LATEST_MODEL=\$(ls -t \${LATEST_RUN}/model_*.pt | head -1)
+  cp \${LATEST_MODEL} /workspace/model_trained.pt
+  echo 'Copied checkpoint:' \${LATEST_MODEL}
+"
+
+# Or specify iteration explicitly (e.g., model_3000.pt for 3000 iterations)
+docker exec isaaclab-test bash -c "cp /workspace/isaaclab/logs/rsl_rl/franka_open_drawer/*/model_3000.pt /workspace/model_trained.pt 2>/dev/null || echo 'Checkpoint not found'"
 ```
 
+### Option 2: Quick Training (For Testing)
+```bash
+# Fast version (no video, ~4 min, 15k-17k steps/s)
+docker exec isaaclab-test bash -c "cd /workspace/isaaclab && \
+ENABLE_CAMERAS=0 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
+  --task Isaac-Open-Drawer-Franka-v0 \
+  --num_envs 512 \
+  --max_iterations 100 \
+  --headless"
+
+# With WandB logging (optional)
+docker exec -e WANDB_API_KEY=$WANDB_API_KEY isaaclab-test bash -c "cd /workspace/isaaclab && \
+ENABLE_CAMERAS=0 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
+  --task Isaac-Open-Drawer-Franka-v0 \
+  --num_envs 512 \
+  --max_iterations 100 \
+  --logger wandb \
+  --headless"
+```
 Copy checkpoint:
 ```bash
-docker cp model_trained.pt isaaclab-test:/workspace/model_trained.pt
+# Find and copy the latest checkpoint automatically
+docker exec isaaclab-test bash -c "
+  LATEST_RUN=\$(ls -td /workspace/isaaclab/logs/rsl_rl/franka_open_drawer/2025-* | head -1)
+  LATEST_MODEL=\$(ls -t \${LATEST_RUN}/model_*.pt | head -1)
+  cp \${LATEST_MODEL} /workspace/model_trained.pt
+  echo 'Copied checkpoint:' \${LATEST_MODEL}
+"
+```
+
+### Option 3: Use Existing Checkpoint
+```bash
+# Copy your pre-trained checkpoint from host
+docker cp /path/to/your/model.pt isaaclab-test:/workspace/model_trained.pt
 ```
 
 ---
 
 ## Prepare Data Collection
 
-Install MP4 writer:
+**Note:** Collection scripts are now pre-installed in the Docker image!
+
+If you're using an old image, rebuild with:
 ```bash
-docker exec -it isaaclab-test bash -c "/isaac-sim/python.sh -m pip install 'imageio[ffmpeg]'"
+docker build -t isaaclab:2.2-ray \
+  -f isaaclab-tiledcam-starter/Dockerfile1.isaaclab-ray .
 ```
 
-Copy scripts:
+Or manually copy scripts (if needed):
 ```bash
-docker cp collect_tiled_with_checkpoint.py isaaclab-test:/workspace/
+docker cp collect_with_camera_env.py isaaclab-test:/workspace/
 docker cp vpl_saver.py isaaclab-test:/workspace/
 ```
 
 ---
 
-## Collect Dataset (Quick Method)
+## Collect Dataset
 
+### Quick Method (Recommended)
 ```bash
 ./run_collection.sh
 ```
 
-What it does:
-- Cleans old data in container
-- Copies scripts
-- Runs collection with 2 envs, 2 episodes, 60 steps, dual cameras
-- Copies results back to host
+### Manual Collection
 
----
+**Method 1: Camera-Enabled Environment**
+```bash
+docker exec -it isaaclab-test bash -c "cd /workspace/isaaclab && \
+ENABLE_CAMERAS=1 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
+./isaaclab.sh -p /workspace/collect_with_camera_env.py \
+  --task Isaac-Open-Drawer-Franka-Camera-v0 \
+  --num_envs 20 \
+  --env_spacing 5.0 \
+  --steps 60 \
+  --num_episodes 2 \
+  --checkpoint /workspace/model_trained.pt \
+  --data_root /workspace/datasets/vpl_tiled \
+  --robot_name franka \
+  --sim_or_real sim \
+  --fps 30 \
+  --headless"
+```
 
-## Collect Dataset (Manual - Full Control)
-
-Single camera (overview only):
+**Method 2: Legacy Environment**
 ```bash
 docker exec -it isaaclab-test bash -c "cd /workspace/isaaclab && \
 ENABLE_CAMERAS=1 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
@@ -127,30 +257,7 @@ ENABLE_CAMERAS=1 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
   --headless"
 ```
 
-Dual camera (overview + wrist):
-```bash
-docker exec -it isaaclab-test bash -c "cd /workspace/isaaclab && \
-ENABLE_CAMERAS=1 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
-./isaaclab.sh -p /workspace/collect_tiled_with_checkpoint.py \
-  --task Isaac-Open-Drawer-Franka-v0 \
-  --num_envs 20 \
-  --env_spacing 5.0 \
-  --steps 60 \
-  --num_episodes 2 \
-  --width 320 \
-  --height 240 \
-  --checkpoint /workspace/model_trained.pt \
-  --data_root /workspace/datasets/vpl_tiled \
-  --robot_name franka \
-  --sim_or_real sim \
-  --fps 30 \
-  --enable_wrist_camera \
-  --wrist_cam_offset -0.05 0.0 0.08 \
-  --wrist_cam_look_offset 0.25 0.0 0.0 \
-  --headless"
-```
-
-Triple camera (overview + wrist + top):
+Dual camera:
 ```bash
 docker exec -it isaaclab-test bash -c "cd /workspace/isaaclab && \
 ENABLE_CAMERAS=1 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
@@ -186,34 +293,24 @@ docker cp isaaclab-test:/workspace/datasets/vpl_tiled ./vpl_tiled
 
 ---
 
-## Customization Examples
+## Customization
 
-### More Episodes
 ```bash
---num_envs 20 --num_episodes 5   # 100 total episodes
---num_envs 20 --num_episodes 10  # 200 total episodes
-```
+# More episodes
+--num_envs 20 --num_episodes 10  # 200 total
 
-### Longer Episodes
-```bash
+# Longer episodes
 --steps 100
-```
 
-### Higher Resolution
-```bash
+# Higher resolution
 --width 640 --height 480
-```
 
-### Frame Sampling (reduce IO)
-```bash
---video_interval 2  # Store every 2nd frame, playback FPS auto-adjusts
-```
+# Frame sampling
+--video_interval 2
 
-### Adjust Wrist Camera View
-```bash
-# Position: [X, Y, Z] in EE frame (X=forward, Y=side, Z=up)
---wrist_cam_offset -0.10 0.0 0.10     # Further back and higher
---wrist_cam_look_offset 0.30 0.05 0.0 # Look forward and slightly right
+# Wrist camera position (EE frame: X=forward, Y=side, Z=up)
+--wrist_cam_offset -0.10 0.0 0.10
+--wrist_cam_look_offset 0.30 0.05 0.0
 ```
 
 ---
@@ -221,17 +318,11 @@ docker cp isaaclab-test:/workspace/datasets/vpl_tiled ./vpl_tiled
 ## View Results
 
 ```bash
-# View a sample video (overview)
-vlc vpl_tiled/*/episode_000/camera_0/episode_000.mp4
-
-# View wrist camera
-vlc vpl_tiled/*/episode_000/camera_1/episode_000.mp4
-
-# View top camera
-vlc vpl_tiled/*/episode_000/camera_2/episode_000.mp4
-
-# View all 3 cameras together
-vlc vpl_tiled/*/episode_000/camera_*/episode_000.mp4
+# View videos
+vlc vpl_tiled/*/episode_000/camera_0/episode_000.mp4  # Overview
+vlc vpl_tiled/*/episode_000/camera_1/episode_000.mp4  # Wrist
+vlc vpl_tiled/*/episode_000/camera_2/episode_000.mp4  # Top
+vlc vpl_tiled/*/episode_000/camera_*/episode_000.mp4  # All cameras
 
 # Inspect HDF5
 python3 -c "import h5py; f = h5py.File('vpl_tiled/*/episode_000/episode_000.h5'); print(list(f.keys())); print('color shape:', f['color'].shape)"
@@ -241,56 +332,89 @@ python3 -c "import h5py; f = h5py.File('vpl_tiled/*/episode_000/episode_000.h5')
 
 ## Dataset Format
 
-**Directory Structure:**
 ```
 vpl_tiled/
 └── Isaac-Open-Drawer-Franka-v0_sim_franka_YYYYMMDD_HHMMSS/
     ├── episode_000/
-    │   ├── camera_0/episode_000.mp4  # Overview camera
-    │   ├── camera_1/episode_000.mp4  # Wrist camera (if enabled)
-    │   ├── camera_2/episode_000.mp4  # Top camera (if enabled)
+    │   ├── camera_0/episode_000.mp4
+    │   ├── camera_1/episode_000.mp4
+    │   ├── camera_2/episode_000.mp4
     │   └── episode_000.h5
     └── metadata.json
 ```
 
-**HDF5 Datasets:**
-- `color`: `(T, N_cams, H, W, 3)` - RGB frames (N_cams=1-3 depending on flags)
+**HDF5 Contents:**
+- `color`: `(T, N_cams, H, W, 3)` - RGB frames
 - `action`: `(T, action_dim)` - Actions
 - `proprio`: `(T, obs_dim)` - Proprioception
 - `intrinsics`: `(N_cams, 3, 3)` - Camera intrinsics
 - `extrinsics`: `(T, N_cams, 4, 4)` - Camera extrinsics
-- `joint_pos`: `(T, n_joints)` - Joint positions
-- `joint_vel`: `(T, n_joints)` - Joint velocities
-- `ee_position`: `(T, 3)` - End-effector position
-- `ee_rotation`: `(T, 4)` - End-effector quaternion (x,y,z,w)
-- `timestamps`: `(T,)` - Timestep indices
-
-**HDF5 Attributes:**
-- `env_idx`, `success`, `terminated`, `num_frames`, `fps`
+- `joint_pos`, `joint_vel`: Joint states
+- `ee_position`, `ee_rotation`: End-effector pose
+- `timestamps`: Timestep indices
 
 ---
 
 ## Troubleshooting
 
-### GPU OOM
+### GPU Cleanup (Stale Processes)
 ```bash
---num_envs 12 --width 256 --height 192
-```
+# Check GPU usage on host
+nvtop  # or nvidia-smi
 
-### No Videos Created
-Check environment variables are set:
-```bash
-ENABLE_CAMERAS=1 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1
-```
-
-### Restart Container
-```bash
+# Quick fix: Restart container
 docker restart isaaclab-test
+# Wait 5-10 seconds for clean restart
+sleep 10
+
+# Force kill all Python processes in container
+docker exec isaaclab-test bash -c "pkill -9 python"
+docker exec isaaclab-test bash -c "pkill -9 isaaclab.sh"
+
+# Nuclear option: Fresh container
+docker stop isaaclab-test
+docker rm isaaclab-test
+docker run -d --gpus all --name isaaclab-test \
+  --shm-size 16g -v $(pwd):$(pwd) \
+  --entrypoint /bin/bash \
+  isaaclab:2.2-ray -lc "sleep infinity"
 ```
 
-### Check Container Logs
+### Common Issues
 ```bash
+# GPU out of memory
+--num_envs 12 --width 256 --height 192
+
+# No videos created - check env vars
+ENABLE_CAMERAS=1 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1
+
+# Training stuck or slow - kill stale processes
+docker restart isaaclab-test
+
+# Check logs
 docker logs isaaclab-test --tail 100
+
+# Check running processes in container
+docker exec isaaclab-test bash -c "ps aux | grep python"
+```
+
+### Checkpoint Issues
+```bash
+# Can't find checkpoint - list all available checkpoints
+docker exec isaaclab-test bash -c "find /workspace/isaaclab/logs/rsl_rl/franka_open_drawer/ -name 'model_*.pt' | sort"
+
+# Find most recent checkpoint
+docker exec isaaclab-test bash -c "
+  LATEST_RUN=\$(ls -td /workspace/isaaclab/logs/rsl_rl/franka_open_drawer/2025-* | head -1)
+  echo 'Latest run:' \${LATEST_RUN}
+  ls -lh \${LATEST_RUN}/model_*.pt
+"
+
+# Copy specific checkpoint manually
+docker exec isaaclab-test bash -c "cp /workspace/isaaclab/logs/rsl_rl/franka_open_drawer/YYYY-MM-DD_HH-MM-SS/model_N.pt /workspace/model_trained.pt"
+
+# Checkpoint naming: model_0.pt, model_50.pt, model_100.pt, etc.
+# Saved every 50 iterations by default (configurable in PPO config)
 ```
 
 ---
@@ -317,77 +441,172 @@ docker logs isaaclab-test --tail 100
 
 ---
 
-## Documentation
-
-- **FULL_GUIDE.md** - All terminal commands organized by workflow step
-- **WHAT_IT_DOES.md** - Detailed explanations of implementation and design decisions
-- **TOP_CAMERA_SETUP.md** - Third camera setup guide and configuration
-
----
-
 ## Key Files
 
-- `collect_tiled_with_checkpoint.py` - Main data collector (369 lines)
-- `vpl_saver.py` - Dataset writer with multi-camera support (452 lines)
-- `run_collection.sh` - Quick runner script (62 lines)
-- `isaaclab-tiledcam-starter/Dockerfile1.isaaclab-ray` - Docker image
+- `collect_with_camera_env.py` - Optimized for camera-enabled environments
+- `collect_tiled_with_checkpoint.py` - Legacy collector (manual camera setup)
+- `vpl_saver.py` - Dataset writer
+- `joint_pos_env_camera_cfg.py` - Camera environment config (pre-installed)
 
 ---
 
-## Included Dependencies
+## Verify Camera Environment
 
-The Docker image includes the following additional packages beyond Isaac Lab base:
+```bash
+# List camera environments
+docker exec isaaclab-test bash -c "cd /workspace/isaaclab && \
+  ./isaaclab.sh -p -c 'import gymnasium as gym; \
+  print([e for e in gym.envs.registry.keys() if \"Camera\" in e])'"
 
-**Core ML & Data Processing:**
-- `lightning==2.5.1` - PyTorch Lightning for training
-- `hydra-core==1.3.2` - Configuration management
-- `wandb[media,workspaces]>=0.20.0` - Experiment tracking
-- `transformers>=4.42.3` - Hugging Face transformers
-- `diffusers==0.29.0` - Diffusion models
-- `timm>=1.0.11,<=1.0.15` - PyTorch image models
-- `einops==0.8.0` - Tensor operations
-- `beartype==0.18.5` - Runtime type checking
-
-**Computer Vision:**
-- `opencv-python>=4.6.0.66,<=4.10.0.84` - OpenCV
-- `albumentations>=2.0.0` - Image augmentation
-- `open3d==0.18.0` - 3D data processing
-- `pillow==10.2.0` - Image processing
-- `moviepy>=1.0.3` - Video editing
-
-**Data & Storage:**
-- `h5py>=3.9.0` - HDF5 file format
-- `pandas>=2.1.0` - Data manipulation
-- `pyarrow>=6.0.1` - Apache Arrow
-- `gcsfs==2023.6.0` - Google Cloud Storage filesystem
-
-**Distributed Computing:**
-- `ray[default,data,train,tune,serve]==2.31.0` - Distributed computing
-- `aiohttp>=3.11.15,<3.12` - Async HTTP client
-
-**Simulation & Robotics:**
-- `gymnasium==0.29.1` - RL environments
-- `spatialmath-python~=1.1.13` - Spatial mathematics
-
-**Utilities:**
-- `numpy>=1.26,<=2.2.6` - Numerical computing
-- `omegaconf>=2.2,<2.4` - Configuration files
-- `scikit-learn>=1.5.0` - Machine learning utilities
-- `pydantic` - Data validation
-- `addict==2.4.0` - Dict access patterns
-- `tqdm` - Progress bars
-- `psutil` - System utilities
-- `filelock` - File locking
-- `google-auth>=1.2` - Google Cloud authentication
+# Test environment
+docker exec -it isaaclab-test bash -c "cd /workspace/isaaclab && \
+ENABLE_CAMERAS=1 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
+./isaaclab.sh -p scripts/environments/zero_agent.py \
+  --task Isaac-Open-Drawer-Franka-Camera-Play-v0 \
+  --enable_cameras --num_envs 4"
+```
 
 ---
 
 ## Notes
 
-- Each parallel environment = separate episode with randomized initial state
 - Total episodes = `num_envs × num_episodes`
-- **Wrist camera**: Positioned behind/above gripper to avoid clipping with robot body
-- **Top camera**: Static bird's-eye view from above the environment
-- Camera offsets are in end-effector frame (wrist) or env origin (top)
-  - EE frame: X=forward (fingers), Y=side, Z=up
+- Camera offsets: EE frame (wrist) or env origin (top)
+  - EE frame: X=forward, Y=side, Z=up
   - Env frame: X=forward, Y=side, Z=up
+
+### Camera Environment Setup
+The custom camera environment (`Isaac-Open-Drawer-Franka-Camera-v0`) includes:
+- **wrist_camera**: Attached to robot's end-effector (auto-follows)
+- **top_camera**: Static overhead view
+- **ee_frame**: End-effector frame sensor
+- **cabinet_frame**: Cabinet frame sensor
+
+**Pre-installed in Docker image** - no manual installation needed!
+
+To verify cameras are available:
+```bash
+docker exec isaaclab-test bash -c "cd /workspace/isaaclab && \
+  ./isaaclab.sh -p -c 'import gymnasium as gym; \
+  print([e for e in gym.envs.registry.keys() if \"Camera\" in e])'"
+```
+
+---
+
+## Performance Tips
+
+### Before Training - Clean GPU Processes
+Always check for stale processes before starting new training:
+```bash
+# On host - check GPU usage
+nvtop  # or nvidia-smi
+
+# If GPU is in use, restart container
+docker restart isaaclab-test && sleep 10
+
+# Or kill stale processes
+docker exec isaaclab-test bash -c "pkill -9 python"
+```
+
+### Training Speed
+**Fast (No Video):**
+- 15,000-17,000 steps/s on L4 GPU
+- ~3 seconds per iteration (512 envs)
+- 100 iterations: ~4 minutes
+- **Recommended for: Quick testing, fast iteration**
+
+**With Video Recording:**
+- 3,000-6,000 steps/s (4-5x slower)
+- 8-18 seconds per iteration (inconsistent due to encoding)
+- 100 iterations: ~15-25 minutes
+- **Recommended for: Monitoring training, debugging behavior**
+
+### Video Recording Best Practices
+- **For fast training:** Remove `--video` flag entirely
+- **For monitoring:** Use high `--video_interval` (e.g., 100-200)
+- **Video encoding overhead:** ~5-10 seconds per video generation
+- **Note:** Videos are saved only every N iterations, causing performance spikes
+
+### WandB Logging
+- Minimal performance impact (<5%)
+- Requires `WANDB_API_KEY` environment variable
+- Use `wandb offline` mode for maximum speed if needed
+
+### Hardware Notes
+- ECC enabled on GPU adds ~5-10% overhead (normal for cloud GPUs)
+- Increase `--num_envs` for better GPU utilization (512-2048)
+- Reduce if running out of memory
+
+---
+
+## GPU Optimization
+
+### Maximizing GPU Utilization
+
+**Problem:** Low GPU utilization (~25%) means unused compute capacity.
+
+**Solution:** Increase parallel environments to saturate GPU.
+
+```bash
+# Test different environment counts
+# 512 envs: ~25% GPU, 15k-17k steps/s
+docker exec isaaclab-test bash -c "cd /workspace/isaaclab && \
+ENABLE_CAMERAS=0 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
+  --task Isaac-Open-Drawer-Franka-v0 \
+  --num_envs 512 \
+  --max_iterations 100 \
+  --headless"
+
+# 1024 envs: Better GPU utilization, higher throughput
+docker exec isaaclab-test bash -c "cd /workspace/isaaclab && \
+ENABLE_CAMERAS=0 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
+  --task Isaac-Open-Drawer-Franka-v0 \
+  --num_envs 1024 \
+  --max_iterations 100 \
+  --headless"
+
+# 2048 envs: Maximum GPU saturation (if memory allows)
+docker exec isaaclab-test bash -c "cd /workspace/isaaclab && \
+ENABLE_CAMERAS=0 ISAAC_SIM_HEADLESS=1 CARB_WINDOWING_USE_EGL=1 \
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
+  --task Isaac-Open-Drawer-Franka-v0 \
+  --num_envs 2048 \
+  --max_iterations 100 \
+  --headless"
+```
+
+### Finding Optimal Configuration
+
+**Monitor GPU utilization on host:**
+```bash
+# Real-time monitoring
+nvtop  # or nvidia-smi -l 1
+
+# Target: 70-95% GPU utilization for optimal performance
+```
+
+**Guidelines:**
+- **< 30% GPU util:** Increase `--num_envs` (try doubling)
+- **70-95% GPU util:** Optimal! ✅
+- **> 95% GPU util:** May be GPU-limited, consider reducing if unstable
+- **OOM (Out of Memory):** Reduce `--num_envs` or task complexity
+
+### Performance Scaling (L4 GPU)
+
+| Environments | GPU Util | Memory | Steps/s | Time (100 iter) | Best For |
+|--------------|----------|--------|---------|-----------------|----------|
+| 512 | ~25% | 4 GB | 15k-17k | ~4 min | Quick tests |
+| 1024 | ~50-60% | 8 GB | 25k-35k | ~2-3 min | **Recommended** |
+| 2048 | ~80-90% | 15 GB | 40k-50k | ~1.5-2 min | Maximum speed |
+
+**Note:** Isaac Sim can be CPU-bound for physics simulation, so GPU utilization < 100% is normal.
+
+### Why Low GPU Utilization Happens
+1. **Physics simulation on CPU** - Isaac Sim physics runs on CPU
+2. **Data transfer overhead** - Moving data between CPU/GPU
+3. **Small batch size** - Not enough parallel work for GPU
+4. **Memory bandwidth** - Limited by data movement speed
+
+**Best practice:** Start with 1024 environments, monitor GPU util, adjust up/down as needed.
