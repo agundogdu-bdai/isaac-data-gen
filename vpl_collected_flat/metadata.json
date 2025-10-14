@@ -1,0 +1,16 @@
+{
+  "task": "Isaac-Open-Drawer-Franka-Camera-v0",
+  "seed": 123,
+  "num_envs": 1,
+  "physics_dt": 0.016666666666666666,
+  "decimation": 1,
+  "step_dt": 0.016666666666666666,
+  "version": 3,
+  "camera_order": [
+    "top",
+    "wrist",
+    "side"
+  ],
+  "camera_h": 120,
+  "camera_w": 160
+}

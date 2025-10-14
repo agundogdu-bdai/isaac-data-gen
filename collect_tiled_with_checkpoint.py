@@ -346,6 +346,27 @@ def run_collection(env, policy, saver, args, num_envs):
 def main():
     # --------- Build env and camera ----------
     env_cfg = build_env_cfg(args)
+    # Make ActionManager identity (arm + gripper)
+    try:
+        if hasattr(env_cfg, 'actions') and hasattr(env_cfg.actions, 'arm_action'):
+            env_cfg.actions.arm_action.normalize = False
+            env_cfg.actions.arm_action.use_delta = False
+            env_cfg.actions.arm_action.scale = [1.0] * 7
+            env_cfg.actions.arm_action.offset = [0.0] * 7
+            if hasattr(env_cfg.actions.arm_action, 'clip'):
+                env_cfg.actions.arm_action.clip = False
+            if hasattr(env_cfg.actions.arm_action, 'rate_limit'):
+                env_cfg.actions.arm_action.rate_limit = 0.0
+        if hasattr(env_cfg, 'actions') and hasattr(env_cfg.actions, 'gripper_action'):
+            env_cfg.actions.gripper_action.normalize = False
+            env_cfg.actions.gripper_action.scale = [1.0]
+            env_cfg.actions.gripper_action.offset = [0.0]
+            if hasattr(env_cfg.actions.gripper_action, 'clip'):
+                env_cfg.actions.gripper_action.clip = False
+            if hasattr(env_cfg.actions.gripper_action, 'rate_limit'):
+                env_cfg.actions.gripper_action.rate_limit = 0.0
+    except Exception:
+        pass
     env, device, obs = create_env(args, env_cfg)
     scene = env.unwrapped.scene
     cam = find_tiled_camera(scene)
