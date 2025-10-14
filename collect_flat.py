@@ -83,7 +83,6 @@ def resize_hwc_uint8(rgb: np.ndarray, H: int, W: int) -> np.ndarray:
 
 # ------------------------- Env & policy -------------------------
 device = args.device
-assert args.num_envs == 1, "--num_envs must be 1 for flat dataset."
 env_cfg = parse_env_cfg(args.task, device=device, num_envs=args.num_envs)
 env_cfg.scene.env_spacing = 6.0
 try:
@@ -93,6 +92,7 @@ except Exception:
 
 env = gym.make(args.task, cfg=env_cfg)
 obs, _ = env.reset()
+num_envs = getattr(env.unwrapped, "num_envs", args.num_envs)
 
 scene = env.unwrapped.scene
 physics_dt = float(scene.physics_dt)
@@ -107,7 +107,9 @@ CAM_ORDER = ["top", "wrist", "side"]
 sensors = scene.sensors if hasattr(scene, "sensors") and isinstance(scene.sensors, dict) else {}
 cams = {name: sensors.get(f"{name}_camera") for name in CAM_ORDER}
 present = [n for n, c in cams.items() if c is not None]
-print(f"[collect_flat] Cameras present: {present} (missing cams will be zero-padded)")
+print(
+    f"[collect_flat] Cameras present: {present} (missing cams will be zero-padded) | num_envs={num_envs}"
+)
 
 # Robot articulation
 try:
@@ -127,73 +129,77 @@ if "_std" in state_dict:
 policy.load_state_dict(state_dict)
 policy.eval()
 
-# Output dir + global meta
+# Output dir
 out_dir = Path(args.output)
 out_dir.mkdir(parents=True, exist_ok=True)
-with open(out_dir / "metadata.json", "w") as f:
-    json.dump(
-        {
-            "task": args.task,
-            "seed": int(args.seed),
-            "num_envs": 1,
-            "physics_dt": physics_dt,
-            "decimation": int(decimation),
-            "step_dt": step_dt,
-            "version": 3,
-            "camera_order": CAM_ORDER,
-            "camera_h": int(args.camera_h),
-            "camera_w": int(args.camera_w),
-        },
-        f,
-        indent=2,
-    )
 
 print(
     f"[collect_flat] Episodes: {args.num_episodes} | steps/ep: {args.steps} | step_dt: {step_dt:.4f}s"
 )
 
+def slice_state_for_env(state_dict: dict, env_index: int, batch_size: int) -> dict:
+    out = {}
+    for k, v in state_dict.items():
+        if isinstance(v, dict):
+            out[k] = slice_state_for_env(v, env_index, batch_size)
+        elif torch.is_tensor(v):
+            # If leading dim matches batch size, keep a singleton batch for reset_to
+            if v.dim() >= 1 and v.shape[0] == batch_size:
+                out[k] = v[env_index : env_index + 1].clone()
+            else:
+                out[k] = v.clone()
+        else:
+            out[k] = v
+    return out
+
+
 # ------------------------- Rollout -------------------------
-for ep in range(args.num_episodes):
+global_ep = 0
+for round_idx in range(args.num_episodes):
     obs, _ = env.reset()
-    print(f"\n[collect_flat] Episode {ep+1}/{args.num_episodes}")
+    print(f"\n[collect_flat] Round {round_idx+1}/{args.num_episodes} — collecting {num_envs} episodes in parallel")
 
-    # Serialize scene state to flat bytes
-    buf = io.BytesIO()
-    torch.save(scene.get_state(), buf)
-    scene_blob = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+    # Capture full multi-env start state once per round
+    full_state = scene.get_state()
 
-    actions: List[np.ndarray] = []
-    pos_tgt: List[np.ndarray] = []
-    vel_tgt: List[np.ndarray] = []
-    eff_tgt: List[np.ndarray] = []
-    qpos: List[np.ndarray] = []
-    qvel: List[np.ndarray] = []
-    tau: List[np.ndarray] = []
-    frames = {k: [] for k in CAM_ORDER}
+    # Per-env containers
+    actions = {eid: [] for eid in range(num_envs)}
+    pos_tgt = {eid: [] for eid in range(num_envs)}
+    vel_tgt = {eid: [] for eid in range(num_envs)}
+    eff_tgt = {eid: [] for eid in range(num_envs)}
+    qpos = {eid: [] for eid in range(num_envs)}
+    qvel = {eid: [] for eid in range(num_envs)}
+    tau = {eid: [] for eid in range(num_envs)}
+    frames = {eid: {k: [] for k in CAM_ORDER} for eid in range(num_envs)}
 
     for t in range(args.steps):
         with torch.inference_mode():
             obs_t = flatten_obs(obs).to(device)
             act = policy.act_inference(obs_t)
-        actions.append(as_np(act[0]))
 
-        # Step env (Action Manager + controllers act internally)
+        # Record actions per env
+        act_np = as_np(act)
+        for eid in range(num_envs):
+            actions[eid].append(act_np[eid])
+
+        # Step env
         obs, rew, terminated, truncated, info = env.step(act)
 
-        # Record executed targets and state
+        # Record executed targets and state from tensors shaped (N, ...)
         d = robot.data
-        if getattr(d, "joint_pos_target", None) is not None:
-            pos_tgt.append(as_np(d.joint_pos_target[0]))
-        if getattr(d, "joint_vel_target", None) is not None:
-            vel_tgt.append(as_np(d.joint_vel_target[0]))
-        if getattr(d, "joint_effort_target", None) is not None:
-            eff_tgt.append(as_np(d.joint_effort_target[0]))
-        if getattr(d, "joint_pos", None) is not None:
-            qpos.append(as_np(d.joint_pos[0]))
-        if getattr(d, "joint_vel", None) is not None:
-            qvel.append(as_np(d.joint_vel[0]))
-        if getattr(d, "applied_torque", None) is not None:
-            tau.append(as_np(d.applied_torque[0]))
+        for eid in range(num_envs):
+            if getattr(d, "joint_pos_target", None) is not None:
+                pos_tgt[eid].append(as_np(d.joint_pos_target[eid]))
+            if getattr(d, "joint_vel_target", None) is not None:
+                vel_tgt[eid].append(as_np(d.joint_vel_target[eid]))
+            if getattr(d, "joint_effort_target", None) is not None:
+                eff_tgt[eid].append(as_np(d.joint_effort_target[eid]))
+            if getattr(d, "joint_pos", None) is not None:
+                qpos[eid].append(as_np(d.joint_pos[eid]))
+            if getattr(d, "joint_vel", None) is not None:
+                qvel[eid].append(as_np(d.joint_vel[eid]))
+            if getattr(d, "applied_torque", None) is not None:
+                tau[eid].append(as_np(d.applied_torque[eid]))
 
         # Capture cameras once per env-step
         for name in CAM_ORDER:
@@ -201,64 +207,95 @@ for ep in range(args.num_episodes):
             if cam is None:
                 continue
             cam.update(dt=step_dt)
-            rgb = cam.data.output["rgb"][0].detach().cpu().numpy()
-            rgb = resize_hwc_uint8(to_rgb_uint8(rgb), args.camera_h, args.camera_w)
-            frames[name].append(rgb)
+            rgb_batch = cam.data.output["rgb"].detach().cpu().numpy()  # (N,H,W,3)
+            for eid in range(num_envs):
+                rgb = rgb_batch[eid]
+                rgb = resize_hwc_uint8(to_rgb_uint8(rgb), args.camera_h, args.camera_w)
+                frames[eid][name].append(rgb)
 
         if (t % 20) == 0:
-            print(f"  step {t:04d} | r0={float(rew[0]):.3f}")
+            try:
+                r0 = float(rew[0])
+            except Exception:
+                r0 = 0.0
+            print(f"  step {t:04d} | r0={r0:.3f}")
 
-    # Write flat HDF5 episode
-    ep_dir = out_dir / f"episode_{ep:03d}"
-    ep_dir.mkdir(exist_ok=True)
-    h5_path = ep_dir / f"episode_{ep:03d}.h5"
-    with h5py.File(h5_path, "w") as f:
-        # Attributes
-        f.attrs["task"] = args.task
-        f.attrs["seed"] = int(args.seed)
-        f.attrs["physics_dt"] = physics_dt
-        f.attrs["decimation"] = int(decimation)
-        f.attrs["step_dt"] = step_dt
-        f.attrs["version"] = 3
-        f.attrs["camera_h"] = int(args.camera_h)
-        f.attrs["camera_w"] = int(args.camera_w)
-        f.attrs["action_dim"] = int(num_actions)
-        if qpos:
-            f.attrs["num_dof"] = int(np.asarray(qpos[0]).shape[-1])
+    # Write one episode per env
+    for eid in range(num_envs):
+        ep_dir = out_dir / f"episode_{global_ep:03d}"
+        ep_dir.mkdir(exist_ok=True)
+        h5_path = ep_dir / f"episode_{global_ep:03d}.h5"
 
-        # Initial scene blob
-        f.create_dataset("scene_state0", data=scene_blob, dtype=np.uint8)
+        # Build env-specific start state blob
+        state_e = slice_state_for_env(full_state, eid, num_envs)
+        buf = io.BytesIO()
+        torch.save(state_e, buf)
+        scene_blob = np.frombuffer(buf.getvalue(), dtype=np.uint8)
 
-        # Core datasets (flat)
-        f.create_dataset("action", data=np.stack(actions, axis=0))
-        if pos_tgt:
-            f.create_dataset("joint_pos_target", data=np.stack(pos_tgt, axis=0))
-        if vel_tgt:
-            f.create_dataset("joint_vel_target", data=np.stack(vel_tgt, axis=0))
-        if eff_tgt:
-            f.create_dataset("joint_effort_target", data=np.stack(eff_tgt, axis=0))
-        if qpos:
-            f.create_dataset("joint_pos", data=np.stack(qpos, axis=0))
-        if qvel:
-            f.create_dataset("joint_vel", data=np.stack(qvel, axis=0))
-        if tau:
-            f.create_dataset("applied_torque", data=np.stack(tau, axis=0))
+        with h5py.File(h5_path, "w") as f:
+            f.attrs["task"] = args.task
+            f.attrs["seed"] = int(args.seed)
+            f.attrs["physics_dt"] = physics_dt
+            f.attrs["decimation"] = int(decimation)
+            f.attrs["step_dt"] = step_dt
+            f.attrs["version"] = 3
+            f.attrs["camera_h"] = int(args.camera_h)
+            f.attrs["camera_w"] = int(args.camera_w)
+            f.attrs["action_dim"] = int(num_actions)
+            if qpos[eid]:
+                f.attrs["num_dof"] = int(np.asarray(qpos[eid][0]).shape[-1])
 
-        # Color: (T,3,H,W,3) — pad zeros if a cam missing
-        T = len(actions)
-        H, W = args.camera_h, args.camera_w
-        color = np.zeros((T, 3, H, W, 3), dtype=np.uint8)
-        for ci, name in enumerate(CAM_ORDER):
-            if len(frames[name]) == T:
-                color[:, ci] = np.stack(frames[name], axis=0)
-        f.create_dataset("color", data=color)
-        f.create_dataset("camera_names", data=np.array(CAM_ORDER, dtype="S"))
+            # Initial scene blob
+            f.create_dataset("scene_state0", data=scene_blob, dtype=np.uint8)
 
-    # Quick MP4s for browsing
-    fps = int(round(1.0 / step_dt)) if step_dt > 0 else 30
-    for name in CAM_ORDER:
-        if frames[name]:
-            iio.imwrite(ep_dir / f"{name}.mp4", frames[name], fps=fps)
+            # Core datasets (flat)
+            f.create_dataset("action", data=np.stack(actions[eid], axis=0))
+            if pos_tgt[eid]:
+                f.create_dataset("joint_pos_target", data=np.stack(pos_tgt[eid], axis=0))
+            if vel_tgt[eid]:
+                f.create_dataset("joint_vel_target", data=np.stack(vel_tgt[eid], axis=0))
+            if eff_tgt[eid]:
+                f.create_dataset("joint_effort_target", data=np.stack(eff_tgt[eid], axis=0))
+            if qpos[eid]:
+                f.create_dataset("joint_pos", data=np.stack(qpos[eid], axis=0))
+            if qvel[eid]:
+                f.create_dataset("joint_vel", data=np.stack(qvel[eid], axis=0))
+            if tau[eid]:
+                f.create_dataset("applied_torque", data=np.stack(tau[eid], axis=0))
+
+            # Color block
+            T = len(actions[eid])
+            H, W = args.camera_h, args.camera_w
+            color = np.zeros((T, 3, H, W, 3), dtype=np.uint8)
+            for ci, name in enumerate(CAM_ORDER):
+                if len(frames[eid][name]) == T:
+                    color[:, ci] = np.stack(frames[eid][name], axis=0)
+            f.create_dataset("color", data=color)
+            f.create_dataset("camera_names", data=np.array(CAM_ORDER, dtype="S"))
+
+        # Quick MP4s
+        fps = int(round(1.0 / step_dt)) if step_dt > 0 else 30
+        for name in CAM_ORDER:
+            if frames[eid][name]:
+                iio.imwrite(ep_dir / f"{name}.mp4", frames[eid][name], fps=fps)
+
+        # Update metadata.json
+        meta_path = out_dir / "metadata.json"
+        metadata = {"num_timesteps": [], "num_episodes": 0}
+        if meta_path.exists():
+            try:
+                with open(meta_path, "r") as f:
+                    prev = json.load(f)
+                    if isinstance(prev, dict):
+                        metadata["num_timesteps"] = prev.get("num_timesteps", [])
+            except Exception:
+                pass
+        metadata["num_timesteps"].append(len(actions[eid]))
+        metadata["num_episodes"] = len(metadata["num_timesteps"])
+        with open(meta_path, "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        global_ep += 1
 
 print("\n[collect_flat] Done.")
 env.close()

@@ -25,6 +25,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--episode", type=str, required=True)  # dir or .h5
 parser.add_argument("--task", type=str, default="Isaac-Open-Drawer-Franka-Camera-v0")
 parser.add_argument("--camera", type=str, default="top", choices=["top", "wrist", "side"])
+parser.add_argument("--mode", type=str, default="targets", choices=["targets", "actions"])  # replay mode
 parser.add_argument("--output", type=str, default="/workspace/replay_flat.mp4")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -48,14 +49,20 @@ else:
 print(f"[replay_flat] Loading: {h5_path}")
 
 with h5py.File(h5_path, "r") as f:
-    if "joint_pos_target" in f:
-        cmd_kind, cmd = "pos", f["joint_pos_target"][()]
-    elif "joint_vel_target" in f:
-        cmd_kind, cmd = "vel", f["joint_vel_target"][()]
-    elif "joint_effort_target" in f:
-        cmd_kind, cmd = "effort", f["joint_effort_target"][()]
+    cmd_kind, cmd = None, None
+    if args.mode == "actions":
+        if "action" not in f:
+            raise RuntimeError("Action dataset not found in H5 for actions mode.")
+        cmd_kind, cmd = "actions", f["action"][()]
     else:
-        raise RuntimeError("No recorded target (pos/vel/effort) found.")
+        if "joint_pos_target" in f:
+            cmd_kind, cmd = "pos", f["joint_pos_target"][()]
+        elif "joint_vel_target" in f:
+            cmd_kind, cmd = "vel", f["joint_vel_target"][()]
+        elif "joint_effort_target" in f:
+            cmd_kind, cmd = "effort", f["joint_effort_target"][()]
+        else:
+            raise RuntimeError("No recorded target (pos/vel/effort) found.")
     physics_dt = float(f.attrs["physics_dt"]) if "physics_dt" in f.attrs else 0.01
     step_dt = float(f.attrs.get("step_dt", physics_dt))
     decimation = max(1, int(round(step_dt / physics_dt))) if physics_dt > 0 else 1
@@ -108,20 +115,27 @@ sim = SimulationContext.instance()
 # Replay
 frames = []
 for t in range(cmd.shape[0]):
-    tgt = torch.from_numpy(cmd[t][None, ...]).to(env.device)
-    if cmd_kind == "pos":
-        robot.set_joint_position_target(tgt)
-    elif cmd_kind == "vel":
-        robot.set_joint_velocity_target(tgt)
-    elif cmd_kind == "effort":
-        robot.set_joint_effort_target(tgt)
+    if cmd_kind in ("pos", "vel", "effort"):
+        tgt = torch.from_numpy(cmd[t][None, ...]).to(env.device)
+        if cmd_kind == "pos":
+            robot.set_joint_position_target(tgt)
+        elif cmd_kind == "vel":
+            robot.set_joint_velocity_target(tgt)
+        elif cmd_kind == "effort":
+            robot.set_joint_effort_target(tgt)
 
-    for _ in range(decimation):
-        scene.write_data_to_sim()
-        sim.step()
-        scene.update(physics_dt)
+        for _ in range(decimation):
+            scene.write_data_to_sim()
+            sim.step()
+            scene.update(physics_dt)
 
-    cam.update(dt=step_dt)
+        cam.update(dt=step_dt)
+    else:  # actions mode
+        act = torch.from_numpy(cmd[t][None, ...]).to(env.device)
+        # Step the environment with the recorded action
+        _obs, _rew, _terminated, _truncated, _info = env.step(act)
+        # Capture at env-step cadence
+        cam.update(dt=step_dt)
     rgb = cam.data.output["rgb"][0].detach().cpu().numpy()
     if rgb.shape[-1] == 4:
         rgb = rgb[..., :3]
