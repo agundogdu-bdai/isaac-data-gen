@@ -3,6 +3,7 @@ vpl_tiled/
 videos/
 datasets/
 frames_tiled/
+vpl_collected_flat/
 
 # Python
 __pycache__/
@@ -43,6 +44,8 @@ logs/
 tmp/
 temp/
 *.tmp
+*.mp4
+*.json
 
 # Test/example scripts (not core functionality)
 run_camera_franka_drawer.py
