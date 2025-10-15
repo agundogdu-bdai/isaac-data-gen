@@ -197,12 +197,12 @@ def build_obs_dict(
     for name in order:
         cam = cams.get(name)
         if cam is None:
-            raise RuntimeError(
-                f"Missing required camera '{name}'. Ensure the task provides top,wrist,side sensors."
-            )
-        rgb = cam.data.output["rgb"][0].detach().cpu().numpy()
-        rgb = resize_hwc_uint8(to_rgb_uint8(rgb), H, W)
-        tensor = hwc_to_nchw01(rgb, device)  # (1,3,H,W)
+            print(f"[eval_diffpo] WARNING: Camera '{name}' missing. Injecting black frame of size {H}x{W}.")
+            tensor = torch.zeros((1, 3, H, W), dtype=torch.float32, device=device)
+        else:
+            rgb = cam.data.output["rgb"][0].detach().cpu().numpy()
+            rgb = resize_hwc_uint8(to_rgb_uint8(rgb), H, W)
+            tensor = hwc_to_nchw01(rgb, device)  # (1,3,H,W)
         per_cam_tensors.append(tensor)
         # Expose as per-camera NCHW tensors expected by encoders
         if name == "top_camera":
