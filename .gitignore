@@ -4,6 +4,7 @@ videos/
 datasets/
 frames_tiled/
 vpl_collected_flat/
+IsaacLab/*
 
 # Python
 __pycache__/

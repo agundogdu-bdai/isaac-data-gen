@@ -4,7 +4,6 @@ set -euo pipefail
 # Defaults (override via CLI flags)
 EPISODE=${1:-vpl_collected_flat/episode_000}
 CAMERA=${2:-top}  # top | wrist | side
-MODE=targets       # targets | actions
 TASK="Isaac-Open-Drawer-Franka-Camera-v0"
 CONTAINER=isaaclab-test
 OUTPUT=""         # host output path; default computed below
@@ -15,7 +14,6 @@ shift $(( $# > 0 ? 1 : 0 )) || true
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --camera) CAMERA="$2"; shift 2 ;;
-    --mode) MODE="$2"; shift 2 ;;
     --task) TASK="$2"; shift 2 ;;
     --output) OUTPUT="$2"; shift 2 ;;
     --container) CONTAINER="$2"; shift 2 ;;
@@ -29,11 +27,11 @@ EPISODE_NAME=$(basename "$EPISODE")
 FULL_PATH=$(find vpl_collected_flat -name "$EPISODE_NAME" -type d | head -1)
 [ -z "$FULL_PATH" ] && FULL_PATH="$EPISODE"
 
-echo "[replay_flat] Replaying: $FULL_PATH (camera: $CAMERA, mode: $MODE, task: $TASK)"
+echo "[replay_flat] Replaying: $FULL_PATH (camera: $CAMERA, task: $TASK)"
 
 # Decide output file on host and inside container
 if [[ -z "$OUTPUT" ]]; then
-  OUTPUT="replay_${EPISODE_NAME}_${CAMERA}_${MODE}_flat.mp4"
+  OUTPUT="replay_${EPISODE_NAME}_${CAMERA}_actions_flat.mp4"
 fi
 OUT_BASENAME=$(basename "$OUTPUT")
 OUT_IN_CONTAINER="/workspace/${OUT_BASENAME}"
@@ -48,7 +46,6 @@ cd /workspace/isaaclab && \
 ENABLE_CAMERAS=1 ./isaaclab.sh -p /workspace/replay_flat.py \
   --episode /workspace/episode_flat \
   --camera \"$CAMERA\" \
-  --mode \"$MODE\" \
   --task \"$TASK\" \
   --output \"$OUT_IN_CONTAINER\" \
   --headless

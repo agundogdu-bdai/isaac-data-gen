@@ -79,6 +79,12 @@ parser.add_argument(
     action="store_true",
     help="Allow loading non-weights-only torch checkpoints (unsafe if untrusted)",
 )
+parser.add_argument(
+    "--actions_per_inference",
+    type=int,
+    default=1,
+    help="Number of env steps to execute from each predicted trajectory before re-inferencing",
+)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.enable_cameras = True
@@ -119,65 +125,7 @@ def hwc_to_nchw01(rgb: np.ndarray, device: torch.device) -> torch.Tensor:
     return x.to(device)
 
 
-def _resolve_camera_mapping(sensors: dict) -> tuple[dict, dict]:
-    """Map environment sensor keys to canonical names expected by the policy.
-
-    Returns:
-        cams: dict mapping canonical names -> sensor object (or None if not found)
-        raw_map: dict mapping canonical names -> actual sensor key picked
-    """
-    available_keys = [str(k) for k in getattr(sensors, 'keys', lambda: [])()] if isinstance(sensors, dict) else []
-    available_lower = [k.lower() for k in available_keys]
-
-    # Alias lists per canonical camera
-    alias_dict = {
-        "top_camera": ["top_camera", "top", "overhead", "ceiling"],
-        "wrist_camera": ["wrist_camera", "wrist", "gripper", "hand", "eef", "tcp"],
-        "side_camera": ["side_camera", "side", "lateral", "shoulder"],
-    }
-
-    def score_match(key_lower: str, alias: str) -> int:
-        a = alias.lower()
-        if key_lower == a:
-            return 4
-        if key_lower == f"{a}_camera" or key_lower == a.replace("_camera", ""):
-            return 3
-        if a in key_lower and "camera" in key_lower:
-            return 2
-        if a in key_lower:
-            return 1
-        return 0
-
-    used_indices: set[int] = set()
-    raw_map: dict[str, Optional[str]] = {"top_camera": None, "wrist_camera": None, "side_camera": None}
-
-    # Prefer exact canonical names first if present
-    for canon in ("top_camera", "wrist_camera", "side_camera"):
-        if canon in available_keys:
-            idx = available_keys.index(canon)
-            raw_map[canon] = available_keys[idx]
-            used_indices.add(idx)
-
-    # Fill remaining via alias/substring heuristics
-    for canon, aliases in alias_dict.items():
-        if raw_map[canon] is not None:
-            continue
-        best_idx = -1
-        best_score = -1
-        for i, key_lower in enumerate(available_lower):
-            if i in used_indices:
-                continue
-            for alias in aliases:
-                s = score_match(key_lower, alias)
-                if s > best_score:
-                    best_score = s
-                    best_idx = i
-        if best_idx >= 0 and best_score > 0:
-            raw_map[canon] = available_keys[best_idx]
-            used_indices.add(best_idx)
-
-    cams = {k: (sensors.get(v) if v is not None else None) for k, v in raw_map.items()}
-    return cams, raw_map  # type: ignore[return-value]
+ 
 
 
 def build_obs_dict(
@@ -188,36 +136,31 @@ def build_obs_dict(
     device: torch.device,
     order: list[str] | None = None,
 ) -> dict:
-    # cams: mapping name->camera object, we expect keys among {'top_camera','wrist_camera','side_camera'}
-    out = {}
-    # Fixed camera order for stacking
+    # Build only the features expected by DiffPO policy: 'color' and 'joint_pos'.
+    # 'color' is stacked per-camera HWC tensors into shape (B, Cams, H, W, 3).
     if order is None:
+        # Use canonical keys already produced by _resolve_camera_mapping
         order = ["top_camera", "wrist_camera", "side_camera"]
-    per_cam_tensors = []  # list of (1,3,H,W)
-    for name in order:
-        cam = cams.get(name)
-        if cam is None:
-            print(f"[eval_diffpo] WARNING: Camera '{name}' missing. Injecting black frame of size {H}x{W}.")
-            tensor = torch.zeros((1, 3, H, W), dtype=torch.float32, device=device)
-        else:
-            rgb = cam.data.output["rgb"][0].detach().cpu().numpy()
-            rgb = resize_hwc_uint8(to_rgb_uint8(rgb), H, W)
-            tensor = hwc_to_nchw01(rgb, device)  # (1,3,H,W)
-        per_cam_tensors.append(tensor)
-        # Expose as per-camera NCHW tensors expected by encoders
-        if name == "top_camera":
-            out["image_top"] = tensor
-        elif name == "wrist_camera":
-            out["image_wrist"] = tensor
-        else:
-            out["image_side"] = tensor
 
-    # Optional: also provide a 9-channel image tensor for single-encoder variants
-    out["image"] = torch.cat(per_cam_tensors, dim=1)  # (1,9,H,W)
+    per_cam_images: list[np.ndarray] = []  # list of (H, W, 3) uint8
+    for name in order:
+        cam = cams[name]
+        rgb = cam.data.output["rgb"][0].detach().cpu().numpy()
+        rgb = resize_hwc_uint8(to_rgb_uint8(rgb), H, W)  # (H, W, 3) uint8
+        per_cam_images.append(rgb)
+
+    out: dict = {}
+    # Assemble unbatched time=1 format expected by policy: (1, X, H, W, 3), float32 on device
+    color_np = np.stack(per_cam_images, axis=0)[None, ...]  # uint8
+    color_t = torch.from_numpy(color_np.astype(np.float32) / 255.0).to(device)
+    out["color"] = color_t
     jp = torch.from_numpy(joint_pos_1xD.astype(np.float32)).to(device)
     if jp.ndim == 1:
         jp = jp[None, ...]
     out["joint_pos"] = jp
+    # print norms of color and joint_pos
+    # print(f"[eval_diffpo] color norms: {color_t.norm(p=2, dim=1)}")
+    # print(f"[eval_diffpo] joint_pos norms: {jp.norm(p=2, dim=1)}")
     return out
 
 
@@ -295,16 +238,14 @@ def make_policy_callable(raw_policy) -> Callable[[dict], torch.Tensor]:
         raise RuntimeError("Policy is None")
 
     def _call(obs: dict):
-        # Prefer predict() for visuomotor policies (handles normalization correctly)
-        for attr in ["predict", "act", "__call__", "forward"]:
-            if hasattr(raw_policy, attr):
-                out = getattr(raw_policy, attr)(obs)
-                if isinstance(out, (tuple, list)):
-                    out = out[0]
-                if isinstance(out, np.ndarray):
-                    out = torch.from_numpy(out)
-                return out
-        raise RuntimeError("Provided policy object has no callable interface (predict/act/call/forward)")
+        if not hasattr(raw_policy, "predict_action"):
+            raise RuntimeError("Policy does not implement predict_action(obs, batched=False)")
+        out = raw_policy.predict_action(obs, batched=False)
+        if isinstance(out, (tuple, list)):
+            out = out[0]
+        if isinstance(out, np.ndarray):
+            out = torch.from_numpy(out)
+        return out
 
     return _call
 
@@ -369,17 +310,18 @@ try:
 except Exception:
     decimation, step_dt = 1, physics_dt
 
-# Cameras: resolve actual sensor keys to canonical names expected by policy
+# Cameras: direct sensor keys from scene.sensors
 sensors = scene.sensors if hasattr(scene, "sensors") and isinstance(scene.sensors, dict) else {}
 available_sensor_keys = list(sensors.keys()) if isinstance(sensors, dict) else []
 print(f"[eval_diffpo] Available sensors: {available_sensor_keys}")
-cams, raw_cam_map = _resolve_camera_mapping(sensors)
-print(
-    f"[eval_diffpo] Camera mapping -> canonical: {{'top_camera': {raw_cam_map.get('top_camera')}, 'wrist_camera': {raw_cam_map.get('wrist_camera')}, 'side_camera': {raw_cam_map.get('side_camera')}}}"
-)
+cams = {
+    "top_camera": sensors.get("top_camera"),
+    "wrist_camera": sensors.get("wrist_camera"),
+    "side_camera": sensors.get("side_camera"),
+}
 present = [n for n, c in cams.items() if c is not None]
 if len(present) == 3:
-    print("[eval_diffpo] ✅ All 3 cameras resolved (top,wrist,side)")
+    print("[eval_diffpo] ✅ Cameras found: top_camera, wrist_camera, side_camera")
 else:
     print(f"[eval_diffpo] ⚠️ Expected 3 cameras; resolved {len(present)}. Missing: {[n for n in cams.keys() if cams[n] is None]}")
 
@@ -435,6 +377,7 @@ policy_obj = REGISTRY.build_policy_from_artifact_name(
     device=device,
     suppress_version_warning=True,
 )
+
 policy_callable: Optional[Callable] = make_policy_callable(policy_obj)
 
 
@@ -475,50 +418,62 @@ steps_taken = 0
 terminated = False
 truncated = False
 
+pending_actions: Optional[torch.Tensor] = None  # shape (K, action_dim) on device
+pending_idx: int = 0
+
 while not (terminated or truncated) and steps_taken < args.max_steps:
     # Update cameras to the next env-step time
     for cam in cams.values():
         if cam is not None:
             cam.update(dt=step_dt)
 
-    # Build observation dict for policy
-    # joint_pos from robot.data, expect shape (1, D)
-    jp = robot.data.joint_pos
-    if jp is None:
-        raise RuntimeError("robot.data.joint_pos is None; cannot build joint_pos[9] feature")
-    jp0 = jp[0].detach().cpu().numpy()
-    if jp0.shape[-1] >= 9:
-        jp0 = jp0[:9]
-    elif jp0.shape[-1] < 9:
-        # pad to 9 if fewer are available
-        jp0 = np.pad(jp0, (0, 9 - jp0.shape[-1]))
+    # If no pending actions remaining, run a new inference to get a trajectory
+    if pending_actions is None or pending_idx >= pending_actions.shape[0]:
+        # Build observation dict for policy (dataset-like CPU/np or tensors as expected by predict_action)
+        jp = robot.data.joint_pos
+        if jp is None:
+            raise RuntimeError("robot.data.joint_pos is None; cannot build joint_pos[9] feature")
+        jp0 = jp[0].detach().cpu().numpy()
+        if jp0.shape[-1] >= 9:
+            jp0 = jp0[:9]
+        elif jp0.shape[-1] < 9:
+            jp0 = np.pad(jp0, (0, 9 - jp0.shape[-1]))
 
-    obs_dict = build_obs_dict(cams, jp0, H, W, device, order=["top_camera", "wrist_camera", "side_camera"]) 
+        obs_dict = build_obs_dict(cams, jp0, H, W, device, order=["top_camera", "wrist_camera", "side_camera"]) 
 
-    # Print shapes once for validation
-    if not printed_shapes:
-        for k in ("image_top", "image_wrist", "image_side", "image"):
-            v = obs_dict.get(k)
-            if isinstance(v, torch.Tensor):
-                print(
-                    f"[eval_diffpo] {k}: shape={tuple(v.shape)} dtype={v.dtype} device={v.device}"
-                )
-        v = obs_dict.get("joint_pos")
-        if isinstance(v, torch.Tensor):
-            print(
-                f"[eval_diffpo] joint_pos: shape={tuple(v.shape)} dtype={v.dtype} device={v.device}"
-            )
-        printed_shapes = True
+        if not printed_shapes:
+            for k, v in obs_dict.items():
+                if isinstance(v, torch.Tensor):
+                    print(
+                        f"[eval_diffpo] {k}: shape={tuple(v.shape)} dtype={v.dtype} device={v.device}"
+                    )
+            printed_shapes = True
 
-    # Compute action
-    with torch.inference_mode():
-        act = policy_callable(obs_dict)
-    if isinstance(act, torch.Tensor):
-        act_t = act.to(device)
-    else:
-        act_t = torch.as_tensor(act, device=device)
-    if act_t.ndim == 1:
-        act_t = act_t[None, ...]
+        # Compute trajectory
+        with torch.inference_mode():
+            traj = policy_callable(obs_dict)
+
+        # Normalize shape to (H, A) and move to device
+        if isinstance(traj, np.ndarray):
+            traj_t = torch.from_numpy(traj)
+        else:
+            traj_t = traj
+        traj_t = traj_t.to(device)
+        if traj_t.ndim == 1:
+            traj_t = traj_t[None, ...]  # (1, A)
+        elif traj_t.ndim == 3:
+            # (B, H, A) -> assume B==1
+            traj_t = traj_t[0]
+        # Now (H, A)
+        K = int(max(1, args.actions_per_inference))
+        K = min(K, traj_t.shape[0])
+        pending_actions = traj_t[:K].contiguous()
+        pending_idx = 0
+
+    # Take next action (A,) -> (1, A)
+    act_row = pending_actions[pending_idx]
+    pending_idx += 1
+    act_t = act_row[None, ...]
 
     # Step
     obs, rew, terminated, truncated, info = env.step(act_t)
@@ -527,6 +482,7 @@ while not (terminated or truncated) and steps_taken < args.max_steps:
     for name, cam in cams.items():
         if cam is None:
             continue
+        cam.update(dt=step_dt)
         rgb = cam.data.output["rgb"][0].detach().cpu().numpy()
         rgb = resize_hwc_uint8(to_rgb_uint8(rgb), H, W)
         if writers:

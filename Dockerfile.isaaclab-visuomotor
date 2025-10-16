@@ -1,5 +1,7 @@
-# Isaac Lab 2.2.0 + Ray + Visuomotor
-FROM nvcr.io/nvidia/isaac-lab:2.2.0
+# Isaac Lab + Ray + Visuomotor
+# Allow overriding base to pick a Python 3.10 image when needed
+ARG BASE_IMAGE=nvcr.io/nvidia/isaac-lab:2.2.0
+FROM ${BASE_IMAGE}
 
 ARG RAY_VER=2.31.0
 ARG VISUOMOTOR_TAG=0.9.7-all
@@ -13,12 +15,10 @@ ENV ACCEPT_EULA=Y \
     RAY_VERSION=${RAY_VER} \
     VISUOMOTOR_VERSION=${VISUOMOTOR_TAG}
 
-# Create shims for python/pip/ray and install Ray
+# Install Ray using Isaac Sim's Python; provide a 'ray' convenience wrapper
 RUN set -euxo pipefail && \
-    printf '#!/bin/bash\nexec /isaac-sim/python.sh "$@"\n' > /usr/local/bin/python && chmod +x /usr/local/bin/python && \
-    printf '#!/bin/bash\nexec /isaac-sim/python.sh -m pip "$@"\n' > /usr/local/bin/pip && chmod +x /usr/local/bin/pip && \
-    /usr/local/bin/pip install --no-cache-dir --upgrade pip && \
-    /usr/local/bin/pip install --no-cache-dir \
+    /isaac-sim/python.sh -m pip install --no-cache-dir --upgrade pip && \
+    /isaac-sim/python.sh -m pip install --no-cache-dir \
         "ray[default]==${RAY_VER}" \
         "ray[serve]==${RAY_VER}" && \
     printf '#!/bin/bash\nexec /isaac-sim/python.sh -m ray.scripts.scripts "$@"\n' > /usr/local/bin/ray && chmod +x /usr/local/bin/ray
@@ -27,7 +27,7 @@ RUN set -euxo pipefail && \
 RUN /isaac-sim/python.sh -c "from importlib.metadata import version; print('Ray version:', version('ray')); assert version('ray') == '${RAY_VER}'"
 
 # Install additional dependencies for data collection and training
-RUN /usr/local/bin/pip install --no-cache-dir \
+RUN /isaac-sim/python.sh -m pip install --no-cache-dir \
     addict==2.4.0 \
     "aiohttp>=3.11.15,<3.12" \
     beartype==0.18.5 \
@@ -59,19 +59,21 @@ RUN /usr/local/bin/pip install --no-cache-dir \
     gymnasium==0.29.1
 
 # Install imageio with ffmpeg support for MP4 video encoding
-RUN /usr/local/bin/pip install --no-cache-dir "imageio[ffmpeg]"
+RUN /isaac-sim/python.sh -m pip install --no-cache-dir "imageio[ffmpeg]"
 
-# Install visuomotor from local wheel (download manually first: see INSTALL_VISUOMOTOR_MANUAL.md)
-# If visuomotor-*.whl exists in build context, copy and install it
-COPY visuomotor-*.whl /tmp/ 2>/dev/null || echo "⚠️  No visuomotor wheel found - will need to install manually later"
-RUN if ls /tmp/visuomotor-*.whl 1> /dev/null 2>&1; then \
-        echo "📦 Installing visuomotor from local wheel..." && \
-        /usr/local/bin/pip install --no-cache-dir /tmp/visuomotor-*.whl && \
-        rm /tmp/visuomotor-*.whl && \
-        echo "✅ visuomotor installed"; \
+# Install visuomotor from local wheel (required). Copy only wheels to keep context small.
+COPY visuomotor-*.whl /tmp/wheels/
+RUN set -eux; \
+    if ls /tmp/wheels/visuomotor-*-py3-none-any.whl 1> /dev/null 2>&1; then \
+        echo "Installing visuomotor from local wheel (forcing ignore Requires-Python)..."; \
+        PIP_IGNORE_REQUIRES_PYTHON=1 /isaac-sim/python.sh -m pip install --no-cache-dir --no-deps /tmp/wheels/visuomotor-*-py3-none-any.whl; \
+        echo "visuomotor installed"; \
     else \
-        echo "⚠️  visuomotor not installed - see INSTALL_VISUOMOTOR_MANUAL.md"; \
-    fi
+        echo "No valid visuomotor wheel matching '*-py3-none-any.whl' found. Wheels present:"; \
+        ls -l /tmp/wheels || true; \
+        exit 1; \
+    fi; \
+    rm -rf /tmp/wheels
 
 # Copy custom camera environment configuration
 COPY joint_pos_env_camera_cfg.py /tmp/joint_pos_env_camera_cfg.py
