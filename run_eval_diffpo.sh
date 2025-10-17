@@ -17,18 +17,22 @@ if [[ -z "$ARTIFACT_REF" ]]; then
 fi
 
 # Defaults (override via CLI flags below)
-TASK="Isaac-Open-Drawer-Franka-Camera-v0"
-MAX_STEPS=100
+# Set Lift camera task by default; tune horizons and resolution for clearer videos
+TASK="Isaac-Lift-Cube-Franka-Camera-Play-v0"
+MAX_STEPS=120
 NUM_ENVS=1
 SEED=123
-CAMERA_H=120
-CAMERA_W=160
+CAMERA_H=240
+CAMERA_W=320
 POLICY_ENTRY="inference:load_policy"
-CAMS="top,wrist,side"
+# Lift task exposes two cameras: front and wrist. Default accordingly.
+CAMS="front,wrist"
 STREAM=1
 HEADLESS=1
 LOADER_PATH=""
 ALLOW_UNPICKLE=0
+# Evaluate DiffPO trajectories by executing multiple actions per inference
+ACTIONS_PER_INFERENCE=1
 
 shift || true
 shift || true
@@ -48,6 +52,7 @@ while [[ $# -gt 0 ]]; do
     --no-stream) STREAM=0; shift 1 ;;
     --loader_path) LOADER_PATH="$2"; shift 2 ;;
     --allow_unpickle) ALLOW_UNPICKLE=1; shift 1 ;;
+    --actions_per_inference) ACTIONS_PER_INFERENCE="$2"; shift 2 ;;
     --headless) HEADLESS=1; shift 1 ;;
     --with-ui) HEADLESS=0; shift 1 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
@@ -68,7 +73,7 @@ if [[ -n "$LOADER_PATH" ]]; then
   fi
 fi
 
-echo "[run_eval_diffpo] Config: task=${TASK} max_steps=${MAX_STEPS} num_envs=${NUM_ENVS} cams=${CAMS} ${CAMERA_H}x${CAMERA_W} stream=${STREAM} loader_path=${LOADER_PATH} allow_unpickle=${ALLOW_UNPICKLE}"
+echo "[run_eval_diffpo] Config: task=${TASK} max_steps=${MAX_STEPS} num_envs=${NUM_ENVS} cams=${CAMS} ${CAMERA_H}x${CAMERA_W} stream=${STREAM} headless=${HEADLESS} actions_per_inference=${ACTIONS_PER_INFERENCE} loader_path=${LOADER_PATH} allow_unpickle=${ALLOW_UNPICKLE}"
 echo "[run_eval_diffpo] Artifact: ${ARTIFACT_REF}"
 
 # Copy eval script into the container
@@ -95,6 +100,7 @@ ENABLE_CAMERAS=1 ./isaaclab.sh -p ${DST}/eval_diffpo.py \
   --output_dir \"${OUT_IN_CONTAINER}\" \
   --policy_entry \"${POLICY_ENTRY}\" \
   --loader_path \"${LOADER_IN_CONT}\" \
+  --actions_per_inference \"${ACTIONS_PER_INFERENCE}\" \
   $([[ \"${HEADLESS}\" == \"1\" ]] && echo --headless || true)
 "
 

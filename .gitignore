@@ -5,6 +5,9 @@ datasets/
 frames_tiled/
 vpl_collected_flat/
 IsaacLab/*
+vpl_data/
+replay_videos/
+new_data/
 
 # Python
 __pycache__/
