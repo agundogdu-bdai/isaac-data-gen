@@ -19,18 +19,21 @@ if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     exit 1
 fi
 
-echo "[1/3] Creating custom environment directory in container..."
+echo "[1/4] Creating custom environment directories in container..."
 docker exec ${CONTAINER_NAME} bash -c "mkdir -p /workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/cabinet/config/franka"
+docker exec ${CONTAINER_NAME} bash -c "mkdir -p /workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/lift/config/franka"
 echo "✓ Directory created"
 echo ""
 
-echo "[2/3] Copying environment configuration file..."
-docker cp "${SCRIPT_DIR}/joint_pos_env_camera_cfg.py" \
+echo "[2/4] Copying environment configuration files..."
+docker cp "${SCRIPT_DIR}/isaaclab_tasks/manager_based/manipulation/cabinet/config/franka/joint_pos_env_camera_cfg.py" \
     ${CONTAINER_NAME}:/workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/cabinet/config/franka/
+docker cp "${SCRIPT_DIR}/isaaclab_tasks/manager_based/manipulation/lift/config/franka/joint_pos_camera_env_cfg.py" \
+    ${CONTAINER_NAME}:/workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/lift/config/franka/
 echo "✓ Configuration file copied"
 echo ""
 
-echo "[3/3] Registering new environments..."
+echo "[3/4] Registering new Cabinet environments..."
 # Backup original __init__.py if it exists and hasn't been backed up
 docker exec ${CONTAINER_NAME} bash -c "
 cd /workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/cabinet/config/franka
@@ -66,7 +69,37 @@ gym.register(
 )
 EOF
 "
-echo "✓ Environments registered"
+echo "✓ Cabinet environments registered"
+echo ""
+
+echo "[4/4] Registering new Lift environments..."
+docker exec ${CONTAINER_NAME} bash -c "cat >> /workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/lift/config/franka/__init__.py << 'EOF'
+
+##
+# Joint Position Control with Camera (Lift)
+##
+
+gym.register(
+    id=\"Isaac-Lift-Cube-Franka-Camera-v0\",
+    entry_point=\"isaaclab.envs:ManagerBasedRLEnv\",
+    kwargs={
+        \"env_cfg_entry_point\": f\"{__name__}.joint_pos_camera_env_cfg:FrankaCubeLiftEnvCameraCfg\",
+        \"rsl_rl_cfg_entry_point\": f\"{agents.__name__}.rsl_rl_ppo_cfg:LiftCubePPORunnerCfg\",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id=\"Isaac-Lift-Cube-Franka-Camera-Play-v0\",
+    entry_point=\"isaaclab.envs:ManagerBasedRLEnv\",
+    kwargs={
+        \"env_cfg_entry_point\": f\"{__name__}.joint_pos_camera_env_cfg:FrankaCubeLiftEnvCameraCfg_PLAY\",
+        \"rsl_rl_cfg_entry_point\": f\"{agents.__name__}.rsl_rl_ppo_cfg:LiftCubePPORunnerCfg\",
+    },
+    disable_env_checker=True,
+)
+EOF"
+echo "✓ Lift environments registered"
 echo ""
 
 echo "=========================================="

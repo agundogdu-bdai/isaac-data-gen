@@ -60,6 +60,11 @@ RUN /isaac-sim/python.sh -m pip install --no-cache-dir \
 
 # Install imageio with ffmpeg support for MP4 video encoding
 RUN /isaac-sim/python.sh -m pip install --no-cache-dir "imageio[ffmpeg]"
+# Copy VPL tools into the image
+COPY vpl_tools /workspace/vpl_tools
+RUN ls -la /workspace/vpl_tools && \
+    /isaac-sim/python.sh -m pip install --no-cache-dir h5py imageio einops
+
 
 # Install visuomotor from local wheel (required). Copy only wheels to keep context small.
 COPY visuomotor-*.whl /tmp/wheels/
@@ -75,13 +80,19 @@ RUN set -eux; \
     fi; \
     rm -rf /tmp/wheels
 
-# Copy custom camera environment configuration
-COPY joint_pos_env_camera_cfg.py /tmp/joint_pos_env_camera_cfg.py
+# Copy custom camera environment configuration (cabinet + lift)
+COPY isaaclab_tasks/manager_based/manipulation/cabinet/config/franka/joint_pos_env_camera_cfg.py /tmp/joint_pos_env_camera_cfg.py
+COPY isaaclab_tasks/manager_based/manipulation/lift/config/franka/joint_pos_camera_env_cfg.py /tmp/joint_pos_camera_env_cfg.py
 
-# Install custom camera-enabled environment into IsaacLab
+# Install custom camera-enabled environment into IsaacLab (cabinet)
 RUN set -euxo pipefail && \
     mkdir -p /workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/cabinet/config/franka && \
     cp /tmp/joint_pos_env_camera_cfg.py /workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/cabinet/config/franka/
+
+# Install custom camera-enabled environment into IsaacLab (lift)
+RUN set -euxo pipefail && \
+    mkdir -p /workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/lift/config/franka && \
+    cp /tmp/joint_pos_camera_env_cfg.py /workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/lift/config/franka/
 
 RUN cat >> /workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/cabinet/config/franka/__init__.py << 'EOF'
 
@@ -108,8 +119,36 @@ gym.register(
 )
 EOF
 
-RUN rm /tmp/joint_pos_env_camera_cfg.py && \
-    echo "✓ Custom camera environments installed: Isaac-Open-Drawer-Franka-Camera-v0"
+RUN rm /tmp/joint_pos_env_camera_cfg.py /tmp/joint_pos_camera_env_cfg.py && \
+    echo "✓ Custom camera environments installed: cabinet + lift camera variants"
+
+# Register Lift camera environments
+RUN cat >> /workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/lift/config/franka/__init__.py << 'EOF'
+
+##
+# Joint Position Control with Camera (Lift)
+##
+
+gym.register(
+    id="Isaac-Lift-Cube-Franka-Camera-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_camera_env_cfg:FrankaCubeLiftEnvCameraCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftCubePPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Cube-Franka-Camera-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_camera_env_cfg:FrankaCubeLiftEnvCameraCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftCubePPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+EOF
 
 WORKDIR /workspace/isaaclab
 

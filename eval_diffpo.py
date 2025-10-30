@@ -310,7 +310,7 @@ try:
 except Exception:
     decimation, step_dt = 1, physics_dt
 
-# Cameras: direct sensor keys from scene.sensors
+# Cameras: direct sensor keys from scene.sensors; Lift config defines front + wrist at 320x240
 sensors = scene.sensors if hasattr(scene, "sensors") and isinstance(scene.sensors, dict) else {}
 available_sensor_keys = list(sensors.keys()) if isinstance(sensors, dict) else []
 print(f"[eval_diffpo] Available sensors: {available_sensor_keys}")
@@ -318,12 +318,50 @@ cams = {
     "top_camera": sensors.get("top_camera"),
     "wrist_camera": sensors.get("wrist_camera"),
     "side_camera": sensors.get("side_camera"),
+    "front_camera": sensors.get("front_camera"),
 }
 present = [n for n, c in cams.items() if c is not None]
-if len(present) == 3:
-    print("[eval_diffpo] ✅ Cameras found: top_camera, wrist_camera, side_camera")
-else:
-    print(f"[eval_diffpo] ⚠️ Expected 3 cameras; resolved {len(present)}. Missing: {[n for n in cams.keys() if cams[n] is None]}")
+print(f"[eval_diffpo] Cameras present: {present}")
+
+def _resolve_cam_order_from_arg(cams_arg: str, sensor_dict: dict) -> list[str]:
+    token_to_sensor = {
+        "top": "top_camera",
+        "wrist": "wrist_camera",
+        "side": "side_camera",
+        "front": "front_camera",
+    }
+    order: list[str] = []
+    try:
+        tokens = [t.strip() for t in str(cams_arg).split(",") if t.strip()]
+    except Exception:
+        tokens = []
+    for t in tokens:
+        key = token_to_sensor.get(t)
+        if key is not None and sensor_dict.get(key) is not None:
+            order.append(key)
+    if not order:
+        # Fallback preferred order if none matched
+        for k in ("top_camera", "wrist_camera", "side_camera", "front_camera"):
+            if sensor_dict.get(k) is not None:
+                order.append(k)
+    return order
+
+def _default_cams_for_task(task_name: str) -> str:
+    # Prefer task-aware defaults when user didn't explicitly set cams
+    name = (task_name or "").lower()
+    if "lift-cube" in name:
+        return "front,wrist"
+    if "open-drawer" in name:
+        return "top,wrist,side"
+    return args.cams
+
+# If user passed the default string unchanged AND task is Lift, override to front,wrist
+user_cams_raw = args.cams
+auto_cams = _default_cams_for_task(args.task)
+cams_arg_effective = user_cams_raw if user_cams_raw != "top,wrist,side" else auto_cams
+
+selected_cam_order = _resolve_cam_order_from_arg(cams_arg_effective, cams)
+print(f"[eval_diffpo] Using camera order: {selected_cam_order}")
 
 # Robot articulation (for joint_pos)
 try:
@@ -383,7 +421,7 @@ policy_callable: Optional[Callable] = make_policy_callable(policy_obj)
 
 # ------------------------- Single Episode Rollout -------------------------
 H, W = int(args.camera_h), int(args.camera_w)
-frames = {k: [] for k, v in cams.items() if v is not None}
+frames = {k: [] for k in selected_cam_order if cams.get(k) is not None}
 
 # Prepare output streaming (optional) to reduce memory
 out_dir = Path(args.output_dir)
@@ -439,7 +477,7 @@ while not (terminated or truncated) and steps_taken < args.max_steps:
         elif jp0.shape[-1] < 9:
             jp0 = np.pad(jp0, (0, 9 - jp0.shape[-1]))
 
-        obs_dict = build_obs_dict(cams, jp0, H, W, device, order=["top_camera", "wrist_camera", "side_camera"]) 
+        obs_dict = build_obs_dict(cams, jp0, H, W, device, order=selected_cam_order) 
 
         if not printed_shapes:
             for k, v in obs_dict.items():
@@ -479,7 +517,8 @@ while not (terminated or truncated) and steps_taken < args.max_steps:
     obs, rew, terminated, truncated, info = env.step(act_t)
 
     # Capture frames after step
-    for name, cam in cams.items():
+    for name in selected_cam_order:
+        cam = cams.get(name)
         if cam is None:
             continue
         cam.update(dt=step_dt)
